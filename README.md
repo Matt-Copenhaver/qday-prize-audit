@@ -5,6 +5,7 @@ Quantum solver for the Elliptic Curve Discrete Logarithm Problem (ECDLP), built 
 - **Author**: Giancarlo Lelli
 - **Contact**: [gcarlo.lelli@gmail.com](mailto:gcarlo.lelli@gmail.com)
 - **LinkedIn**: https://www.linkedin.com/in/giancarlolelli
+- **Background**: Technology leader with 10+ years in enterprise software, full-stack architecture, and cloud-native development. Background in computer science with hands-on experience across .NET, Python, Rust, and Cloud ecosystems. Currently working as leader of Cloud GTM at Avanade and serving as CTIO for AnyVentures.
 
 ## Approach description
 
