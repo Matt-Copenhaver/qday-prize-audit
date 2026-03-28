@@ -1,0 +1,36 @@
+(quantum) PS C:\Git\_personal\quantum> python projecteleven.py --challenge 4
+
+Challenge curve: 4-bit
+p = 13, n = 7
+G = (11, 5)
+Q = (11, 8)
+
+============================================================
+SHOR'S ALGORITHM FOR ECDLP
+Q-Day Prize: https://www.qdayprize.org/
+============================================================
+
+Curve: y^2 = x^3 + 0x + 7 (mod 13)
+Group order: n = 7
+Generator: G = (11, 5)
+Target: Q = (11, 8)
+
+Qubits: 11 total
+Circuit depth: 11
+
+Backend: ibm_marrakesh
+Transpiled depth: 2352
+Two-qubit gates: 774
+Job ID: d73rts18qmgc73flc6gg
+Waiting for results...
+
+Unique outcomes: 1751
+
+============================================================
+RESULT: d = 6
+Verification: 6*G = (11, 8)
+[OK] VERIFIED
+============================================================
+
+[OK] SUCCESS: Recovered correct secret key
+(quantum) PS C:\Git\_personal\quantum>

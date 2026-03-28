@@ -32,6 +32,14 @@ MANIFEST
 *.manifest
 *.spec
 
+# Custom files
+credentials.txt
+CLAUDE.md
+Scripts/
+.claude/
+share/
+pyvenv.cfg
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

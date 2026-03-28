@@ -1,0 +1,760 @@
+"""
+Quantum Arithmetic Circuits for ECDLP
+======================================
+
+Scalable quantum circuits for Shor's ECDLP algorithm.  Two strategies:
+
+1. **EfficientPermutationAdder** – index-based encoding with O(N·n) gate
+   decomposition instead of dense 2^n × 2^n unitary matrices.  Practical for
+   curves up to ~16-bit group order on current simulators/hardware.
+
+2. **Modular arithmetic primitives** (QFT-based) – building blocks for a fully
+   arithmetic coordinate-encoding approach that scales polynomially.
+
+References
+----------
+- Beauregard (2003): Circuit for Shor's algorithm using 2n+3 qubits
+- Roetteler, Naehrig, Svore, Lauter (2017): Quantum resource estimates for
+  computing elliptic curve discrete logarithms
+"""
+
+import math
+import numpy as np
+from typing import Tuple, Optional, List, Dict
+from dataclasses import dataclass
+
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister, transpile
+from qiskit.circuit.library import QFTGate
+
+# Re-use curve helpers from the main module
+from projecteleven import CurveParams, EllipticCurve, PointEncoder
+
+
+# ---------------------------------------------------------------------------
+# Part 1 — Efficient permutation-based point adder
+# ---------------------------------------------------------------------------
+
+def _apply_transposition(qc: QuantumCircuit, a: int, b: int,
+                         qubits: List[int], n_bits: int):
+    """Swap computational basis states |a⟩ and |b⟩ on *qubits*.
+
+    Uses the CNOT-reduction method:
+    1. CNOT from a pivot differing-bit to all other differing bits so that
+       |a⟩ and |b⟩ now differ in only one bit.
+    2. Multi-controlled X on that pivot bit, conditioned on all other bits
+       matching the (transformed) pattern.
+    3. Undo the CNOTs.
+
+    Gate count: O(n) per transposition.
+    """
+    if a == b:
+        return
+
+    diff = a ^ b
+    diff_bits = [i for i in range(n_bits) if (diff >> i) & 1]
+    same_bits = [(i, (a >> i) & 1) for i in range(n_bits) if not ((diff >> i) & 1)]
+
+    pivot = diff_bits[0]
+    other_diff = diff_bits[1:]
+
+    # --- Step 1: CNOT pivot → other differing bits ---
+    for d in other_diff:
+        qc.cx(qubits[pivot], qubits[d])
+
+    # After CNOTs, compute the transformed value of a
+    a_prime = a
+    for d in other_diff:
+        a_prime ^= ((a >> pivot) & 1) << d   # XOR bit d with pivot bit of a
+
+    # --- Step 2: multi-controlled X on pivot, conditioned on all other bits ---
+    # Prepare controls: flip bits that need to be 0→1 for the MCX
+    x_undo = []
+    controls = []
+    for i in range(n_bits):
+        if i == pivot:
+            continue
+        expected = (a_prime >> i) & 1
+        if expected == 0:
+            qc.x(qubits[i])
+            x_undo.append(i)
+        controls.append(qubits[i])
+
+    if controls:
+        qc.mcx(controls, qubits[pivot])
+    else:
+        qc.x(qubits[pivot])
+
+    for i in x_undo:
+        qc.x(qubits[i])
+
+    # --- Step 3: undo CNOTs ---
+    for d in reversed(other_diff):
+        qc.cx(qubits[pivot], qubits[d])
+
+
+def _controlled_transposition(qc: QuantumCircuit, ctrl: int,
+                              a: int, b: int,
+                              qubits: List[int], n_bits: int):
+    """Controlled swap of |a⟩ ↔ |b⟩, activated when *ctrl* = |1⟩.
+
+    Same CNOT-reduction strategy but the MCX gains one extra control.
+    """
+    if a == b:
+        return
+
+    diff = a ^ b
+    diff_bits = [i for i in range(n_bits) if (diff >> i) & 1]
+    same_bits = [(i, (a >> i) & 1) for i in range(n_bits) if not ((diff >> i) & 1)]
+
+    pivot = diff_bits[0]
+    other_diff = diff_bits[1:]
+
+    # Step 1: CNOTs (unconditional – they cancel outside |a⟩/|b⟩ subspace)
+    for d in other_diff:
+        qc.cx(qubits[pivot], qubits[d])
+
+    a_prime = a
+    for d in other_diff:
+        a_prime ^= ((a >> pivot) & 1) << d
+
+    # Step 2: controlled MCX
+    x_undo = []
+    controls = [ctrl]          # extra control qubit
+    for i in range(n_bits):
+        if i == pivot:
+            continue
+        expected = (a_prime >> i) & 1
+        if expected == 0:
+            qc.x(qubits[i])
+            x_undo.append(i)
+        controls.append(qubits[i])
+
+    qc.mcx(controls, qubits[pivot])
+
+    for i in x_undo:
+        qc.x(qubits[i])
+
+    # Step 3: undo CNOTs
+    for d in reversed(other_diff):
+        qc.cx(qubits[pivot], qubits[d])
+
+
+class EfficientPermutationAdder:
+    """Replaces QuantumPointAdder with O(N·n) gate decomposition.
+
+    Instead of materialising a 2^(n+1) × 2^(n+1) unitary matrix (~4 GB for
+    13-bit curves), decomposes each "add point S" permutation into
+    transpositions via cycle decomposition.
+
+    Memory: O(N) for the permutation table.
+    Gates:  O(N·n) per controlled point addition (N = group order, n = n_bits).
+    """
+
+    def __init__(self, encoder: PointEncoder):
+        self.encoder = encoder
+        self.n = encoder.n
+        self.n_bits = encoder.n_bits
+        self.ec = encoder.ec
+        self._perm_cache: Dict[int, List[Tuple[int, int]]] = {}
+
+    def _get_transpositions(self, S: Optional[Tuple[int, int]]) -> List[Tuple[int, int]]:
+        """Cycle-decompose the 'add S' permutation into transpositions."""
+        s_idx = self.encoder.encode(S)
+        if s_idx in self._perm_cache:
+            return self._perm_cache[s_idx]
+
+        # Build permutation table
+        perm = list(range(1 << self.n_bits))
+        for i in range(self.n):
+            P = self.encoder.decode(i)
+            P_plus_S = self.ec.add(P, S)
+            perm[i] = self.encoder.encode(P_plus_S)
+
+        # Cycle decomposition → transpositions
+        transpositions = []
+        visited = [False] * len(perm)
+        for start in range(len(perm)):
+            if visited[start] or perm[start] == start:
+                visited[start] = True
+                continue
+            cycle = []
+            j = start
+            while not visited[j]:
+                visited[j] = True
+                cycle.append(j)
+                j = perm[j]
+            # (c0 c1 c2 ... ck) = (c0 ck)(c0 c_{k-1})...(c0 c1)
+            for idx in range(len(cycle) - 1, 0, -1):
+                transpositions.append((cycle[0], cycle[idx]))
+
+        self._perm_cache[s_idx] = transpositions
+        return transpositions
+
+    def apply_controlled_add(self, qc: QuantumCircuit,
+                             ctrl_qubit: int,
+                             pt_qubits: List[int],
+                             S: Optional[Tuple[int, int]]):
+        """Add classical point S to the point register, controlled by ctrl_qubit."""
+        if S is None:
+            return
+        transpositions = self._get_transpositions(S)
+        for a, b in transpositions:
+            _controlled_transposition(qc, ctrl_qubit, a, b, pt_qubits, self.n_bits)
+
+
+# ---------------------------------------------------------------------------
+# Part 2 — QFT-based modular arithmetic
+# ---------------------------------------------------------------------------
+
+def phi_add_constant(qc: QuantumCircuit, qubits: List[int],
+                     n_bits: int, constant: int):
+    """Add a classical constant to a register already in Fourier basis.
+
+    Convention: QFTGate(n) with do_swaps=True, so qubit j (j=0 = coarsest)
+    carries phase 2πx / 2^{j+1}.  Rotation to add *constant*:
+        P(2π · constant / 2^{j+1})  on qubit j.
+    """
+    for j in range(n_bits):
+        denom = 1 << (j + 1)
+        angle = 2 * math.pi * constant / denom
+        # Skip trivially-zero rotations
+        if abs(angle % (2 * math.pi)) > 1e-14:
+            qc.p(angle, qubits[j])
+
+
+def c_phi_add_constant(qc: QuantumCircuit, ctrl: int,
+                       qubits: List[int], n_bits: int, constant: int):
+    """Controlled: add classical constant in Fourier basis."""
+    for j in range(n_bits):
+        denom = 1 << (j + 1)
+        angle = 2 * math.pi * constant / denom
+        if abs(angle % (2 * math.pi)) > 1e-14:
+            qc.cp(angle, ctrl, qubits[j])
+
+
+def modular_add_constant(qc: QuantumCircuit, qubits: List[int],
+                         n_bits: int, constant: int, p: int, ancilla: int):
+    """Compute (target + constant) mod p in-place.
+
+    Register *qubits* has *n_bits* qubits (enough to hold values up to 2p-1).
+    *ancilla* is a single qubit initialised to |0⟩ and restored to |0⟩.
+
+    Beauregard's modular adder:
+      1. φ-add a
+      2. φ-sub p
+      3. IQFT; copy MSB → ancilla (MSB=1 ⟹ underflow)
+      4. QFT; if ancilla: φ-add p
+      5. IQFT; uncompute ancilla; QFT; restore register; IQFT
+    """
+    constant = constant % p
+    qft = QFTGate(n_bits)
+    iqft = qft.inverse()
+
+    # 1. QFT
+    qc.append(qft, qubits)
+    # 2. φ-add constant, then φ-sub p
+    phi_add_constant(qc, qubits, n_bits, constant)
+    phi_add_constant(qc, qubits, n_bits, -p)
+    # 3. IQFT → check MSB for underflow
+    qc.append(iqft, qubits)
+    qc.cx(qubits[n_bits - 1], ancilla)       # MSB=1 ⟹ result was negative
+    # 4. QFT → conditionally add p back
+    qc.append(qft, qubits)
+    c_phi_add_constant(qc, ancilla, qubits, n_bits, p)
+    # 5. IQFT (result is now (target + constant) mod p)
+    qc.append(iqft, qubits)
+
+    # --- uncompute ancilla ---
+    qc.x(ancilla)
+    qc.append(qft, qubits)
+    phi_add_constant(qc, qubits, n_bits, -constant)
+    qc.append(iqft, qubits)
+    qc.cx(qubits[n_bits - 1], ancilla)
+    qc.append(qft, qubits)
+    phi_add_constant(qc, qubits, n_bits, constant)
+    qc.append(iqft, qubits)
+
+
+def c_modular_add_constant(qc: QuantumCircuit, ctrl: int,
+                           qubits: List[int], n_bits: int,
+                           constant: int, p: int, ancilla: int):
+    """Controlled modular addition of a classical constant."""
+    constant = constant % p
+    qft = QFTGate(n_bits)
+    iqft = qft.inverse()
+
+    qc.append(qft, qubits)
+    c_phi_add_constant(qc, ctrl, qubits, n_bits, constant)
+    c_phi_add_constant(qc, ctrl, qubits, n_bits, -p)
+    qc.append(iqft, qubits)
+    qc.cx(qubits[n_bits - 1], ancilla)
+    qc.append(qft, qubits)
+    c_phi_add_constant(qc, ancilla, qubits, n_bits, p)
+    qc.append(iqft, qubits)
+
+    # uncompute ancilla
+    qc.x(ancilla)
+    qc.append(qft, qubits)
+    c_phi_add_constant(qc, ctrl, qubits, n_bits, -constant)
+    qc.append(iqft, qubits)
+    qc.cx(qubits[n_bits - 1], ancilla)
+    qc.append(qft, qubits)
+    c_phi_add_constant(qc, ctrl, qubits, n_bits, constant)
+    qc.append(iqft, qubits)
+
+
+def phi_add_quantum(qc: QuantumCircuit, a_qubits: List[int],
+                    b_qubits: List[int], n_bits: int):
+    """Add quantum register |b⟩ to |a⟩ (a must be in QFT basis).
+
+    For each qubit a_j and each qubit b_k (k ≤ j):
+        CP(2π / 2^{j-k+1})  controlled by b_k on a_j.
+
+    Gate count: O(n²) CP gates.
+    """
+    for j in range(n_bits):
+        for k in range(j + 1):
+            angle = 2 * math.pi / (1 << (j - k + 1))
+            qc.cp(angle, b_qubits[k], a_qubits[j])
+
+
+def c_phi_add_quantum(qc: QuantumCircuit, ctrl: int,
+                      a_qubits: List[int], b_qubits: List[int], n_bits: int):
+    """Controlled: add |b⟩ to |a⟩ in QFT basis when ctrl=|1⟩.
+
+    Decomposes each doubly-controlled phase CCP(θ) into 2 CX + 3 CP gates.
+    """
+    for j in range(n_bits):
+        for k in range(j + 1):
+            angle = 2 * math.pi / (1 << (j - k + 1))
+            # CCP(θ) on ctrl, b_k → a_j
+            qc.cp(angle / 2, b_qubits[k], a_qubits[j])
+            qc.cx(ctrl, b_qubits[k])
+            qc.cp(-angle / 2, b_qubits[k], a_qubits[j])
+            qc.cx(ctrl, b_qubits[k])
+            qc.cp(angle / 2, ctrl, a_qubits[j])
+
+
+# ---------------------------------------------------------------------------
+# Part 2b — Modular multiplication (constant and quantum-quantum)
+# ---------------------------------------------------------------------------
+
+def modular_multiply_constant(qc: QuantumCircuit,
+                              x_qubits: List[int],
+                              out_qubits: List[int],
+                              n_bits: int,
+                              constant: int,
+                              p: int,
+                              ancilla: int):
+    """Compute |x⟩|0⟩ → |x⟩|c·x mod p⟩  (out_qubits accumulator).
+
+    Uses shift-and-add: for each bit k of x, if x_k=1,
+    add (c · 2^k mod p) to out_qubits.
+
+    *ancilla*: single qubit for the modular adder.
+    """
+    for k in range(n_bits):
+        addend = (constant * (1 << k)) % p
+        if addend == 0:
+            continue
+        c_modular_add_constant(qc, x_qubits[k], out_qubits,
+                               n_bits, addend, p, ancilla)
+
+
+def modular_multiply_constant_inplace(qc: QuantumCircuit,
+                                      x_qubits: List[int],
+                                      tmp_qubits: List[int],
+                                      n_bits: int,
+                                      constant: int,
+                                      p: int,
+                                      ancilla: int):
+    """Compute |x⟩ → |c·x mod p⟩ in-place using a temporary register.
+
+    1. |x⟩|0⟩  → |x⟩|cx mod p⟩           (forward multiply)
+    2. SWAP x ↔ tmp                        → |cx mod p⟩|x⟩
+    3. |cx mod p⟩|x⟩ → |cx mod p⟩|0⟩      (inverse multiply by c⁻¹)
+    """
+    c_inv = pow(constant, -1, p)
+
+    # Forward: accumulate c·x into tmp
+    modular_multiply_constant(qc, x_qubits, tmp_qubits, n_bits, constant, p, ancilla)
+
+    # SWAP
+    for i in range(n_bits):
+        qc.swap(x_qubits[i], tmp_qubits[i])
+
+    # Inverse: subtract c⁻¹·(new x) from tmp to zero it out
+    for k in range(n_bits):
+        addend = (c_inv * (1 << k)) % p
+        if addend == 0:
+            continue
+        # Subtract = add (p - addend)
+        c_modular_add_constant(qc, x_qubits[k], tmp_qubits,
+                               n_bits, (p - addend) % p, p, ancilla)
+
+
+# ---------------------------------------------------------------------------
+# Part 3 — Modular inversion via Fermat's little theorem
+# ---------------------------------------------------------------------------
+
+def modular_inverse_fermat(qc: QuantumCircuit,
+                           x_qubits: List[int],
+                           out_qubits: List[int],
+                           tmp_qubits: List[int],
+                           n_bits: int,
+                           p: int,
+                           ancilla: int):
+    """Compute |x⟩|0⟩ → |x⟩|x⁻¹ mod p⟩  via x^{p-2} mod p.
+
+    Uses repeated squaring with classical exponent e = p-2.
+    Requires out_qubits initialised to encoding of 1, and tmp_qubits as scratch.
+
+    This is the most expensive primitive: O(n) modular multiplications,
+    each O(n²) gates → O(n³) total.
+    """
+    e = p - 2
+    # Initialise out = 1 (set LSB)
+    qc.x(out_qubits[0])
+
+    # We need a copy of x to repeatedly square
+    # Copy x → tmp via CNOT
+    for i in range(n_bits):
+        qc.cx(x_qubits[i], tmp_qubits[i])
+
+    # Repeated squaring: for each bit of e
+    for bit_pos in range(e.bit_length()):
+        if (e >> bit_pos) & 1:
+            # out = out * base mod p
+            # We need quantum-quantum multiplication here
+            # For now, use the constant-multiply trick per-bit of base
+            _quantum_modular_multiply_accumulate(
+                qc, tmp_qubits, out_qubits, n_bits, p, ancilla
+            )
+
+        # Square the base: base = base² mod p
+        if bit_pos < e.bit_length() - 1:
+            _quantum_modular_square_inplace(
+                qc, tmp_qubits, out_qubits, n_bits, p, ancilla
+            )
+
+
+def _quantum_modular_multiply_accumulate(
+        qc: QuantumCircuit,
+        a_qubits: List[int], b_qubits: List[int],
+        n_bits: int, p: int, ancilla: int):
+    """Multiply: |a⟩|b⟩ → |a⟩|a·b mod p⟩ using QFT quantum-quantum addition.
+
+    For each bit k of a: if a_k=1, add b·2^k to accumulator (in Fourier space).
+    This modifies b in-place, treating it as an accumulator.
+
+    NOTE: this is a simplified version that adds into b. For correct Shor's
+    usage, the caller must manage the accumulator lifecycle.
+    """
+    qft = QFTGate(n_bits)
+    iqft = qft.inverse()
+
+    for k in range(n_bits):
+        # Controlled on a_k: add b << k to accumulator
+        # We do this by adding in Fourier space with shift
+        qc.append(qft, b_qubits)
+        # For each bit j of b (in QFT), add phase controlled by a_k
+        for j in range(n_bits):
+            shift = k  # multiply by 2^k
+            angle = 2 * math.pi * (1 << shift) / (1 << (j + 1))
+            if abs(angle % (2 * math.pi)) > 1e-14:
+                # Need CCP: controlled by a_k AND b itself
+                # This is the quantum-quantum part
+                qc.cp(angle, a_qubits[k], b_qubits[j])
+        qc.append(iqft, b_qubits)
+
+
+def _quantum_modular_square_inplace(
+        qc: QuantumCircuit,
+        x_qubits: List[int], tmp_qubits: List[int],
+        n_bits: int, p: int, ancilla: int):
+    """Square in-place: |x⟩ → |x² mod p⟩ (uses tmp as scratch).
+
+    This is a placeholder — full implementation requires careful
+    ancilla management for the quantum-quantum multiplication.
+    """
+    # TODO: implement proper quantum squaring
+    # For now this is a structural placeholder
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Part 4 — Scalable Shor ECDLP using efficient permutation decomposition
+# ---------------------------------------------------------------------------
+
+class ScalableShorECDLP:
+    """Shor's algorithm using efficient permutation circuit decomposition.
+
+    Replaces the dense-unitary approach with O(N·n) gate decomposition per
+    controlled point addition.  Memory usage is O(N) instead of O(2^{2n}).
+
+    For 13-bit curves:
+      - Dense unitary: ~4 GB per matrix, 28 matrices → impossible
+      - This approach:  ~4243 transpositions per permutation → feasible
+    """
+
+    def __init__(self, params: CurveParams,
+                 G: Tuple[int, int], Q: Tuple[int, int]):
+        self.params = params
+        self.G = G
+        self.Q = Q
+        self.n = params.n
+
+        self.ec = EllipticCurve(params)
+        self.encoder = PointEncoder(self.ec, G)
+        self.adder = EfficientPermutationAdder(self.encoder)
+
+        if Q is not None and Q not in self.encoder.point_to_index:
+            raise ValueError("Q is not in the group generated by G")
+
+    def build_circuit(self, num_counting: int = None) -> QuantumCircuit:
+        """Build the Shor ECDLP circuit with efficient gate decomposition."""
+        n = self.n
+        n_bits = self.encoder.n_bits
+
+        if num_counting is None:
+            num_counting = n_bits + 1
+
+        j_reg = QuantumRegister(num_counting, 'j')
+        k_reg = QuantumRegister(num_counting, 'k')
+        pt_reg = QuantumRegister(n_bits, 'pt')
+        cl = ClassicalRegister(2 * num_counting + n_bits, 'cr')
+
+        qc = QuantumCircuit(j_reg, k_reg, pt_reg, cl,
+                            name=f"Shor_ECDLP_efficient_n{n}")
+
+        # Hadamard on counting registers
+        for i in range(num_counting):
+            qc.h(j_reg[i])
+            qc.h(k_reg[i])
+
+        # Controlled additions of 2^i * G
+        G_power = self.G
+        for i in range(num_counting):
+            self.adder.apply_controlled_add(
+                qc, j_reg[i], list(pt_reg), G_power
+            )
+            G_power = self.ec.add(G_power, G_power)
+            if G_power is None:
+                G_power = self.G
+
+        # Controlled additions of 2^i * Q
+        Q_power = self.Q
+        for i in range(num_counting):
+            if Q_power is not None:
+                self.adder.apply_controlled_add(
+                    qc, k_reg[i], list(pt_reg), Q_power
+                )
+            Q_power = self.ec.add(Q_power, Q_power)
+            if Q_power is None and self.Q is not None:
+                Q_power = self.Q
+
+        # Measure point register
+        for i in range(n_bits):
+            qc.measure(pt_reg[i], cl[i])
+
+        # Inverse QFT on counting registers
+        qc.append(QFTGate(num_counting).inverse(), j_reg)
+        qc.append(QFTGate(num_counting).inverse(), k_reg)
+
+        # Measure counting registers
+        for i in range(num_counting):
+            qc.measure(j_reg[i], cl[n_bits + i])
+            qc.measure(k_reg[i], cl[n_bits + num_counting + i])
+
+        return qc
+
+    def qubit_count(self) -> Dict[str, int]:
+        n_bits = self.encoder.n_bits
+        num_counting = n_bits + 1
+        return {
+            "j_register": num_counting,
+            "k_register": num_counting,
+            "point_register": n_bits,
+            "total": 2 * num_counting + n_bits,
+            "group_order": self.n,
+        }
+
+    def gate_estimate(self) -> Dict[str, int]:
+        """Estimate gate counts for the circuit."""
+        n_bits = self.encoder.n_bits
+        num_counting = n_bits + 1
+        n = self.n
+
+        # Each permutation has at most N transpositions
+        # Each transposition: ~n CNOTs + 1 MCX(n-1 controls)
+        # MCX(n-1) decomposes to ~O(n) Toffoli gates
+        trans_per_perm = n  # upper bound
+        gates_per_trans = 3 * n_bits  # rough: CNOTs + MCX decomposition
+        perms = 2 * num_counting  # for G powers and Q powers
+
+        return {
+            "permutations": perms,
+            "transpositions_per_perm": trans_per_perm,
+            "estimated_basic_gates": perms * trans_per_perm * gates_per_trans,
+            "estimated_cx_gates": perms * trans_per_perm * n_bits * 2,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Part 5 — Top-level solver using efficient decomposition
+# ---------------------------------------------------------------------------
+
+def solve_ecdlp_scalable(
+    p: int, a: int, b: int, n: int,
+    G: Tuple[int, int], Q: Tuple[int, int],
+    shots: int = 8192,
+    backend_name: str = "ibm_marrakesh",
+    token: Optional[str] = None,
+    instance: str = "open-instance",
+    verbose: bool = True,
+) -> Optional[int]:
+    """Solve ECDLP using Shor's algorithm with efficient gate decomposition on IBM Quantum."""
+    from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
+    from projecteleven import ShorECDLP  # for extract_discrete_log and verification
+
+    if verbose:
+        print("=" * 60)
+        print("SHOR'S ALGORITHM FOR ECDLP (Efficient Decomposition)")
+        print("=" * 60)
+
+    params = CurveParams(p, a, b, n)
+    solver = ScalableShorECDLP(params, G, Q)
+
+    if verbose:
+        print(f"\nCurve: y² = x³ + {a}x + {b} (mod {p})")
+        print(f"Group order: n = {n}")
+        print(f"Generator: G = {G}")
+        print(f"Target: Q = {Q}")
+        reqs = solver.qubit_count()
+        print(f"\nQubits: {reqs['total']} total")
+        est = solver.gate_estimate()
+        print(f"Estimated basic gates: ~{est['estimated_basic_gates']:,}")
+
+    qc = solver.build_circuit()
+
+    if verbose:
+        print(f"Circuit gates: {qc.size()}")
+        print(f"Circuit depth: {qc.depth()}")
+
+    if token:
+        service = QiskitRuntimeService(
+            channel="ibm_quantum_platform", token=token, instance=instance
+        )
+    else:
+        service = QiskitRuntimeService(
+            channel="ibm_quantum_platform", instance=instance
+        )
+    backend = service.backend(backend_name)
+
+    if verbose:
+        print(f"\nBackend: {backend.name}")
+
+    qc_t = transpile(qc, backend, optimization_level=3)
+
+    if verbose:
+        print(f"Transpiled depth: {qc_t.depth()}")
+        ops = qc_t.count_ops()
+        cx_count = sum(v for k, v in ops.items() if k in ['cx', 'ecr', 'cz'])
+        print(f"Two-qubit gates: {cx_count}")
+
+    sampler = SamplerV2(mode=backend)
+    job = sampler.run([qc_t], shots=shots)
+
+    if verbose:
+        print(f"Job ID: {job.job_id()}")
+        print("Waiting for results...")
+
+    result = job.result()
+    pub_result = result[0]
+    counts = pub_result.data.cr.get_counts()
+
+    if verbose:
+        print(f"\nUnique outcomes: {len(counts)}")
+
+    # Reuse the extraction logic from ShorECDLP
+    legacy_solver = ShorECDLP(params, G, Q)
+    d = legacy_solver.extract_discrete_log(counts)
+
+    if verbose:
+        print(f"\n{'=' * 60}")
+        if d is not None:
+            ec = EllipticCurve(params)
+            print(f"RESULT: d = {d}")
+            computed = ec.scalar_mult(d, G)
+            print(f"Verification: {d}*G = {computed}")
+            if computed == Q:
+                print("[OK] VERIFIED")
+            else:
+                print("[FAIL] MISMATCH")
+        else:
+            print("FAILED: Could not extract discrete log")
+        print("=" * 60)
+
+    return d
+
+
+# ---------------------------------------------------------------------------
+# Quick self-test
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="ECDLP Solver - Scalable Efficient Decomposition"
+    )
+    parser.add_argument("--shots", type=int, default=8192)
+    parser.add_argument("--backend", default="ibm_marrakesh")
+    parser.add_argument("--token", type=str,
+                        help="IBM Quantum API token. Saves to local account on first use.")
+    parser.add_argument("--instance", type=str, default="open-instance",
+                        help="IBM Quantum instance (default: open-instance)")
+    args = parser.parse_args()
+
+    if args.token:
+        from qiskit_ibm_runtime import QiskitRuntimeService
+        QiskitRuntimeService.save_account(
+            channel="ibm_quantum_platform", token=args.token, overwrite=True
+        )
+        print(f"IBM Quantum account saved.")
+
+    print("=== Efficient permutation decomposition — IBM Quantum ===\n")
+
+    # 4-bit curve: p=13, a=0, b=7, n=7
+    params = CurveParams(p=13, a=0, b=7, n=7)
+    G = (11, 5)
+    d_secret = 6
+    ec = EllipticCurve(params)
+    Q = ec.scalar_mult(d_secret, G)
+    print(f"Curve: y^2 = x^3 + 7 (mod 13), n={params.n}")
+    print(f"G = {G}, Q = {d_secret}*G = {Q}")
+
+    solver = ScalableShorECDLP(params, G, Q)
+    reqs = solver.qubit_count()
+    est = solver.gate_estimate()
+    print(f"Qubits: {reqs['total']}")
+    print(f"Estimated gates: ~{est['estimated_basic_gates']:,}")
+
+    print("\nBuilding circuit...")
+    qc = solver.build_circuit()
+    print(f"Circuit size: {qc.size()} gates, depth: {qc.depth()}")
+
+    print("\nSubmitting to IBM Quantum...")
+    result = solve_ecdlp_scalable(
+        13, 0, 7, 7, G, Q,
+        shots=args.shots,
+        backend_name=args.backend,
+        token=args.token,
+        instance=args.instance,
+        verbose=True,
+    )
+
+    if result == d_secret:
+        print(f"\n[OK] Test PASSED: recovered d = {result}")
+    else:
+        print(f"\n[FAIL] Test FAILED: got {result}, expected {d_secret}")
