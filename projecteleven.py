@@ -369,13 +369,24 @@ def solve_ecdlp(
         print("=" * 60)
 
     params = CurveParams(p, a, b, n)
-    solver = ShorECDLP(params, G, Q)
+    n_bits = max(1, (n - 1).bit_length())
+
+    # Dense unitary approach is only feasible for small curves (up to ~6-bit).
+    # Beyond that, use the efficient permutation decomposition.
+    if n_bits <= 6:
+        solver = ShorECDLP(params, G, Q)
+        strategy = "dense unitary"
+    else:
+        from quantum_arithmetic import ScalableShorECDLP
+        solver = ScalableShorECDLP(params, G, Q)
+        strategy = "efficient permutation"
 
     if verbose:
         print(f"\nCurve: y^2 = x^3 + {a}x + {b} (mod {p})")
         print(f"Group order: n = {n}")
         print(f"Generator: G = {G}")
         print(f"Target: Q = {Q}")
+        print(f"Strategy: {strategy}")
         reqs = solver.qubit_count()
         print(f"\nQubits: {reqs['total']} total")
 
@@ -445,14 +456,6 @@ CURVES = {
         "n": 7,
         "G": (11, 5),
         "Q": (11, 8)
-    },
-    "curve_13": {
-        "p": 4159,
-        "a": 0,
-        "b": 7,
-        "n": 4243,
-        "G": (3390, 2980),
-        "Q": (3457, 3962)
     }
 }
 

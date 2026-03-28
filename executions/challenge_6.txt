@@ -1,35 +1,35 @@
-(quantum) PS C:\Git\_personal\quantum> python projecteleven.py --challenge 4 --backend ibm_torino
+(quantum) PS C:\Git\_personal\quantum> python projecteleven.py --challenge 6 --backend ibm_torino
 
-Challenge curve: 4-bit
-p = 13, n = 7
-G = (11, 5)
-Q = (11, 8)
+Challenge curve: 6-bit
+p = 43, n = 31
+G = (34, 3)
+Q = (21, 25)
 
 ============================================================
 SHOR'S ALGORITHM FOR ECDLP
 Q-Day Prize: https://www.qdayprize.org/
 ============================================================
 
-Curve: y^2 = x^3 + 0x + 7 (mod 13)
-Group order: n = 7
-Generator: G = (11, 5)
-Target: Q = (11, 8)
+Curve: y^2 = x^3 + 0x + 7 (mod 43)
+Group order: n = 31
+Generator: G = (34, 3)
+Target: Q = (21, 25)
 Strategy: dense unitary
 
-Qubits: 11 total
-Circuit depth: 11
+Qubits: 17 total
+Circuit depth: 15
 
 Backend: ibm_torino
-Transpiled depth: 2425
-Two-qubit gates: 774
-Job ID: d73u28kvllmc73anvi90
+Transpiled depth: 72475
+Two-qubit gates: 23471
+Job ID: d73u2l5koquc73e24u8g
 Waiting for results...
 
-Unique outcomes: 1869
+Unique outcomes: 3776
 
 ============================================================
-RESULT: d = 6
-Verification: 6*G = (11, 8)
+RESULT: d = 18
+Verification: 18*G = (21, 25)
 [OK] VERIFIED
 ============================================================
 

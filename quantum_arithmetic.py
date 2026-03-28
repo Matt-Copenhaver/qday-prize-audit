@@ -94,22 +94,24 @@ def _apply_transposition(qc: QuantumCircuit, a: int, b: int,
 
 def _controlled_transposition(qc: QuantumCircuit, ctrl: int,
                               a: int, b: int,
-                              qubits: List[int], n_bits: int):
+                              qubits: List[int], n_bits: int,
+                              ancilla_qubits: List[int] = None):
     """Controlled swap of |a⟩ ↔ |b⟩, activated when *ctrl* = |1⟩.
 
     Same CNOT-reduction strategy but the MCX gains one extra control.
+    If *ancilla_qubits* has enough qubits (>= num_controls - 2), uses V-chain
+    MCX decomposition: O(n) Toffolis instead of O(n^2).
     """
     if a == b:
         return
 
     diff = a ^ b
     diff_bits = [i for i in range(n_bits) if (diff >> i) & 1]
-    same_bits = [(i, (a >> i) & 1) for i in range(n_bits) if not ((diff >> i) & 1)]
 
     pivot = diff_bits[0]
     other_diff = diff_bits[1:]
 
-    # Step 1: CNOTs (unconditional – they cancel outside |a⟩/|b⟩ subspace)
+    # Step 1: CNOTs (unconditional -- they cancel outside |a⟩/|b⟩ subspace)
     for d in other_diff:
         qc.cx(qubits[pivot], qubits[d])
 
@@ -129,7 +131,11 @@ def _controlled_transposition(qc: QuantumCircuit, ctrl: int,
             x_undo.append(i)
         controls.append(qubits[i])
 
-    qc.mcx(controls, qubits[pivot])
+    needed_anc = max(0, len(controls) - 2)
+    if ancilla_qubits and len(ancilla_qubits) >= needed_anc and needed_anc > 0:
+        qc.mcx(controls, qubits[pivot], ancilla_qubits[:needed_anc], mode='v-chain')
+    else:
+        qc.mcx(controls, qubits[pivot])
 
     for i in x_undo:
         qc.x(qubits[i])
@@ -148,6 +154,14 @@ class EfficientPermutationAdder:
 
     Memory: O(N) for the permutation table.
     Gates:  O(N·n) per controlled point addition (N = group order, n = n_bits).
+
+    Optimisations
+    -------------
+    - Each controlled addition is built as an isolated sub-circuit and appended
+      to the main circuit as a single opaque gate.  This avoids quadratic DAG
+      growth in Qiskit when millions of gates are added one-by-one.
+    - An optional ancilla qubit enables V-chain MCX decomposition (O(n) Toffolis
+      instead of O(n²) without ancilla).
     """
 
     def __init__(self, encoder: PointEncoder):
@@ -156,6 +170,7 @@ class EfficientPermutationAdder:
         self.n_bits = encoder.n_bits
         self.ec = encoder.ec
         self._perm_cache: Dict[int, List[Tuple[int, int]]] = {}
+        self._circuit_cache: Dict[Tuple[int, bool], QuantumCircuit] = {}
 
     def _get_transpositions(self, S: Optional[Tuple[int, int]]) -> List[Tuple[int, int]]:
         """Cycle-decompose the 'add S' permutation into transpositions."""
@@ -170,7 +185,7 @@ class EfficientPermutationAdder:
             P_plus_S = self.ec.add(P, S)
             perm[i] = self.encoder.encode(P_plus_S)
 
-        # Cycle decomposition → transpositions
+        # Cycle decomposition -> transpositions
         transpositions = []
         visited = [False] * len(perm)
         for start in range(len(perm)):
@@ -190,16 +205,57 @@ class EfficientPermutationAdder:
         self._perm_cache[s_idx] = transpositions
         return transpositions
 
+    def _build_controlled_add_circuit(self, S: Optional[Tuple[int, int]],
+                                       num_ancilla: int) -> QuantumCircuit:
+        """Build a sub-circuit for controlled addition of S.
+
+        Qubit layout of the sub-circuit:
+          [0 .. n_bits-1]           = point register
+          [n_bits]                  = control qubit
+          [n_bits+1 .. n_bits+num_ancilla] = ancilla qubits (for v-chain MCX)
+        """
+        s_idx = self.encoder.encode(S)
+        cache_key = (s_idx, num_ancilla)
+        if cache_key in self._circuit_cache:
+            return self._circuit_cache[cache_key]
+
+        n_bits = self.n_bits
+        n_qubits = n_bits + 1 + num_ancilla
+        sub = QuantumCircuit(n_qubits, name=f"CAdd{s_idx}")
+
+        pt_qubits = list(range(n_bits))
+        ctrl = n_bits
+        ancilla_qubits = list(range(n_bits + 1, n_qubits)) if num_ancilla > 0 else None
+
+        transpositions = self._get_transpositions(S)
+        for a, b in transpositions:
+            _controlled_transposition(sub, ctrl, a, b, pt_qubits, n_bits, ancilla_qubits)
+
+        self._circuit_cache[cache_key] = sub
+        return sub
+
     def apply_controlled_add(self, qc: QuantumCircuit,
                              ctrl_qubit: int,
                              pt_qubits: List[int],
-                             S: Optional[Tuple[int, int]]):
-        """Add classical point S to the point register, controlled by ctrl_qubit."""
+                             S: Optional[Tuple[int, int]],
+                             ancilla_qubits: List[int] = None):
+        """Add classical point S to the point register, controlled by ctrl_qubit.
+
+        Builds the transposition circuit as an isolated sub-circuit, then
+        appends it as a single gate to *qc*.  This keeps the main DAG small.
+        """
         if S is None:
             return
-        transpositions = self._get_transpositions(S)
-        for a, b in transpositions:
-            _controlled_transposition(qc, ctrl_qubit, a, b, pt_qubits, self.n_bits)
+
+        num_ancilla = len(ancilla_qubits) if ancilla_qubits else 0
+        sub = self._build_controlled_add_circuit(S, num_ancilla)
+
+        # Map sub-circuit qubits to main circuit qubits
+        qubit_map = pt_qubits + [ctrl_qubit]
+        if ancilla_qubits:
+            qubit_map.extend(ancilla_qubits)
+
+        qc.append(sub.to_gate(), qubit_map)
 
 
 # ---------------------------------------------------------------------------
@@ -499,6 +555,8 @@ class ScalableShorECDLP:
 
     def __init__(self, params: CurveParams,
                  G: Tuple[int, int], Q: Tuple[int, int]):
+        from projecteleven import ShorECDLP
+
         self.params = params
         self.G = G
         self.Q = Q
@@ -507,9 +565,14 @@ class ScalableShorECDLP:
         self.ec = EllipticCurve(params)
         self.encoder = PointEncoder(self.ec, G)
         self.adder = EfficientPermutationAdder(self.encoder)
+        self._extraction_solver = ShorECDLP(params, G, Q)
 
         if Q is not None and Q not in self.encoder.point_to_index:
             raise ValueError("Q is not in the group generated by G")
+
+    def extract_discrete_log(self, counts: Dict[str, int]) -> Optional[int]:
+        """Delegate to ShorECDLP extraction logic."""
+        return self._extraction_solver.extract_discrete_log(counts)
 
     def build_circuit(self, num_counting: int = None) -> QuantumCircuit:
         """Build the Shor ECDLP circuit with efficient gate decomposition."""
@@ -519,13 +582,24 @@ class ScalableShorECDLP:
         if num_counting is None:
             num_counting = n_bits + 1
 
+        # V-chain MCX needs (num_controls - 2) ancillas.
+        # Max controls per transposition = n_bits (ctrl + n_bits-1 non-pivot).
+        num_ancilla = max(0, n_bits - 2)
+
         j_reg = QuantumRegister(num_counting, 'j')
         k_reg = QuantumRegister(num_counting, 'k')
         pt_reg = QuantumRegister(n_bits, 'pt')
+        anc_reg = QuantumRegister(num_ancilla, 'anc') if num_ancilla > 0 else None
         cl = ClassicalRegister(2 * num_counting + n_bits, 'cr')
 
-        qc = QuantumCircuit(j_reg, k_reg, pt_reg, cl,
-                            name=f"Shor_ECDLP_efficient_n{n}")
+        if anc_reg:
+            qc = QuantumCircuit(j_reg, k_reg, pt_reg, anc_reg, cl,
+                                name=f"Shor_ECDLP_efficient_n{n}")
+            ancilla_qubits = list(anc_reg)
+        else:
+            qc = QuantumCircuit(j_reg, k_reg, pt_reg, cl,
+                                name=f"Shor_ECDLP_efficient_n{n}")
+            ancilla_qubits = None
 
         # Hadamard on counting registers
         for i in range(num_counting):
@@ -536,7 +610,7 @@ class ScalableShorECDLP:
         G_power = self.G
         for i in range(num_counting):
             self.adder.apply_controlled_add(
-                qc, j_reg[i], list(pt_reg), G_power
+                qc, j_reg[i], list(pt_reg), G_power, ancilla_qubits
             )
             G_power = self.ec.add(G_power, G_power)
             if G_power is None:
@@ -547,7 +621,7 @@ class ScalableShorECDLP:
         for i in range(num_counting):
             if Q_power is not None:
                 self.adder.apply_controlled_add(
-                    qc, k_reg[i], list(pt_reg), Q_power
+                    qc, k_reg[i], list(pt_reg), Q_power, ancilla_qubits
                 )
             Q_power = self.ec.add(Q_power, Q_power)
             if Q_power is None and self.Q is not None:
@@ -571,11 +645,13 @@ class ScalableShorECDLP:
     def qubit_count(self) -> Dict[str, int]:
         n_bits = self.encoder.n_bits
         num_counting = n_bits + 1
+        num_ancilla = max(0, n_bits - 2)
         return {
             "j_register": num_counting,
             "k_register": num_counting,
             "point_register": n_bits,
-            "total": 2 * num_counting + n_bits,
+            "ancilla": num_ancilla,
+            "total": 2 * num_counting + n_bits + num_ancilla,
             "group_order": self.n,
         }
 

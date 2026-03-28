@@ -1,0 +1,37 @@
+(quantum) PS C:\Git\_personal\quantum> python projecteleven.py --challenge 9 --backend ibm_torino
+
+Challenge curve: 9-bit
+p = 349, n = 313
+G = (22, 191)
+Q = (138, 315)
+
+============================================================
+SHOR'S ALGORITHM FOR ECDLP
+Q-Day Prize: https://www.qdayprize.org/
+============================================================
+
+Curve: y^2 = x^3 + 0x + 7 (mod 349)
+Group order: n = 313
+Generator: G = (22, 191)
+Target: Q = (138, 315)
+Strategy: efficient permutation
+
+Qubits: 36 total
+Circuit depth: 23
+
+Backend: ibm_torino
+Transpiled depth: 1764266
+Two-qubit gates: 887544
+Job ID: d73ua2h8qmgc73flei9g
+Waiting for results...
+
+Unique outcomes: 8168
+
+============================================================
+RESULT: d = 135
+Verification: 135*G = (138, 315)
+[OK] VERIFIED
+============================================================
+
+[OK] SUCCESS: Recovered correct secret key
+(quantum) PS C:\Git\_personal\quantum>
