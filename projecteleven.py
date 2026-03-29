@@ -357,7 +357,8 @@ def solve_ecdlp(
     backend_name: str = "ibm_marrakesh",
     token: Optional[str] = None,
     instance: str = "open-instance",
-    verbose: bool = True
+    verbose: bool = True,
+    oracle: Optional[str] = None,
 ) -> Optional[int]:
     """Solve ECDLP using Shor's algorithm on IBM Quantum hardware."""
     from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
@@ -371,15 +372,18 @@ def solve_ecdlp(
     params = CurveParams(p, a, b, n)
     n_bits = max(1, (n - 1).bit_length())
 
-    # Dense unitary approach is only feasible for small curves (up to ~6-bit).
-    # Beyond that, use the efficient permutation decomposition.
-    if n_bits <= 6:
-        solver = ShorECDLP(params, G, Q)
-        strategy = "dense unitary"
-    else:
+    # Strategy selection: explicit --oracle flag overrides auto-selection.
+    if oracle == "coordinate":
+        from quantum_oracle import QuantumOracleShorECDLP
+        solver = QuantumOracleShorECDLP(params, G, Q)
+        strategy = "coordinate oracle"
+    elif oracle == "permutation" or (oracle is None and n_bits > 6):
         from quantum_arithmetic import ScalableShorECDLP
         solver = ScalableShorECDLP(params, G, Q)
         strategy = "efficient permutation"
+    else:
+        solver = ShorECDLP(params, G, Q)
+        strategy = "dense unitary"
 
     if verbose:
         print(f"\nCurve: y^2 = x^3 + {a}x + {b} (mod {p})")
@@ -501,6 +505,9 @@ if __name__ == "__main__":
                         help="IBM Quantum API token. Saves to local account on first use.")
     parser.add_argument("--instance", type=str, default="open-instance",
                         help="IBM Quantum instance (default: open-instance)")
+    parser.add_argument("--oracle", choices=["dense", "permutation", "coordinate"],
+                        default=None,
+                        help="Oracle strategy (default: auto-select based on curve size)")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
 
@@ -562,6 +569,7 @@ if __name__ == "__main__":
         backend_name=args.backend,
         token=args.token,
         instance=args.instance,
+        oracle=args.oracle,
     )
 
     if result is not None and d_expected is not None:

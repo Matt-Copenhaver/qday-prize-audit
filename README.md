@@ -9,9 +9,9 @@ Quantum solver for the Elliptic Curve Discrete Logarithm Problem (ECDLP), built 
 
 ## Approach description
 
-All challenge curves use **y^2 = x^3 + 7** over F_p (a = 0, b = 7), matching the secp256k1 family. The solver selects the appropriate strategy automatically based on curve size.
+All challenge curves use **y^2 = x^3 + 7** over F_p (a = 0, b = 7), matching the secp256k1 family. The solver selects the appropriate strategy automatically based on curve size, or a specific oracle can be chosen via `--oracle`.
 
-Both strategies implement the same Shor circuit structure:
+All three strategies implement the same Shor circuit structure:
 1. Prepare counting registers |j>, |k> in uniform superposition (Hadamard)
 2. Compute |j>|k>|jG + kQ> via 2t controlled point additions (t = num_counting qubits)
 3. Measure the point register, collapsing it to some group element R
@@ -55,6 +55,32 @@ Each controlled addition is built as an **isolated sub-circuit** and appended to
 
 Where N = group order, n = bit length, t = n+1 counting qubits.
 
+### Strategy 3: Coordinate-Based Quantum Oracle (--oracle coordinate)
+
+Available for curves up to ~6-bit. Implemented in `quantum_oracle.py`.
+
+Instead of encoding points as group indices (0..n-1), the quantum register holds actual **(x, y) field-element coordinates** in binary plus an identity flag. The point register layout is:
+
+- `x_reg`: f_bits qubits (f_bits = ceil(log2(p)))
+- `y_reg`: f_bits qubits
+- `id_flag`: 1 qubit (1 = point at infinity)
+
+Each controlled "add classical S" operation is computed from the EC addition formula over all valid coordinate encodings, producing a permutation on the coordinate register. This permutation is then cycle-decomposed into transpositions and implemented using the same CNOT-reduction + MCX infrastructure as Strategy 2.
+
+- **Encoding**: Genuine coordinate representation -- qubits store (x, y) field values, not abstract group indices
+- **Qubits**: 2t + 2*f_bits + 1 + max(0, 2*f_bits - 1) ancillas
+- **Gate count**: O(N * f_bits) per controlled addition, where N = group order
+
+| Metric | Dense Unitary | Efficient Permutation | Coordinate Oracle |
+|--------|--------------|----------------------|-------------------|
+| Point encoding | Group index | Group index | (x, y, id_flag) |
+| Qubits (4-bit) | 11 | 13 | 24 |
+| Qubits (6-bit) | 17 | 21 | 36 |
+| 2Q gates (4-bit) | 774 | ~1,200 | 6,449 |
+| 2Q gates (6-bit) | 23,471 | ~38,000 | 95,254 |
+
+The coordinate oracle uses more qubits and gates because the point register is wider (2*f_bits+1 vs n_bits), but it represents a fundamentally different encoding that maps directly to the elliptic curve coordinate space.
+
 ### QFT Arithmetic Primitives
 
 The codebase also includes QFT-based modular arithmetic building blocks (Beauregard/Draper adders, modular multiplication, Fermat inversion) as a foundation toward a fully arithmetic coordinate-encoding approach that would scale polynomially to 256-bit keys.
@@ -74,7 +100,9 @@ Successfully recovered private keys on IBM Quantum hardware for challenge curves
 | Challenge | p | n | Strategy | Qubits | 2Q Gates | Transpiled Depth | Backend | Recovered d | Job ID |
 |-----------|-----|------|----------|--------|----------|------------------|-------------|-------------|--------|
 | 4-bit | 13 | 7 | Dense unitary | 11 | 774 | 2,425 | ibm_torino | 6 | d73u28kvllmc73anvi90 |
+| 4-bit | 13 | 7 | Coordinate oracle | 24 | 6,449 | 13,125 | ibm_kingston | 6 | d74ht798qmgc73fm32c0 |
 | 6-bit | 43 | 31 | Dense unitary | 17 | 23,471 | 72,475 | ibm_torino | 18 | d73u2l5koquc73e24u8g |
+| 6-bit | 43 | 31 | Coordinate oracle | 36 | 95,254 | 169,766 | ibm_kingston | 18 | d74hu918qmgc73fm33g0 |
 | 8-bit | 163 | 139 | Efficient permutation | 32 | 294,628 | 599,517 | ibm_kingston | 103 | d73ui15koquc73e25e4g |
 | 9-bit | 349 | 313 | Efficient permutation | 36 | 887,544 | 1,764,266 | ibm_torino | 135 | d73ua2h8qmgc73flei9g |
 
@@ -103,6 +131,9 @@ python projecteleven.py --challenge 4 --token YOUR_IBM_TOKEN --backend ibm_marra
 # Subsequent runs (token already saved):
 python projecteleven.py --challenge 4 --backend ibm_marrakesh
 
+# Use the coordinate-based quantum oracle:
+python projecteleven.py --challenge 4 --oracle coordinate --backend ibm_marrakesh
+
 # Use a specific IBM Quantum instance:
 python projecteleven.py --challenge 4 --instance ibm-q/open/main --backend ibm_marrakesh
 
@@ -120,6 +151,7 @@ python projecteleven.py --curve curve_4 --verify-only
 | `--backend NAME` | IBM Quantum backend | `ibm_marrakesh` |
 | `--instance ID` | IBM Quantum instance | `open-instance` |
 | `--shots N` | Number of measurement shots | `8192` |
+| `--oracle TYPE` | Oracle strategy: `dense`, `permutation`, or `coordinate` | auto |
 | `--d N` | Known secret key for testing (with `--curve`) | — |
 | `--verify-only` | Validate curve parameters and exit | — |
 
@@ -128,6 +160,7 @@ python projecteleven.py --curve curve_4 --verify-only
 ```
 projecteleven.py        # Shor solver — dense unitary approach
 quantum_arithmetic.py   # Shor solver — efficient permutation decomposition + QFT arithmetic
+quantum_oracle.py       # Shor solver — coordinate-based quantum oracle
 input_curves.json       # Challenge curves (4-bit to 30-bit)
 problem/curves.py       # Curve generation utility
 requirements.txt        # qiskit, qiskit-ibm-runtime

@@ -39,6 +39,7 @@ Scripts/
 .claude/
 share/
 pyvenv.cfg
+brief.md
 
 # Installer logs
 pip-log.txt
