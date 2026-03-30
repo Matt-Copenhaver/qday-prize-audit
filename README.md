@@ -111,7 +111,7 @@ Successfully recovered private keys on IBM Quantum hardware for challenge curves
 
 All runs were executed on the IBM Quantum open-instance plan, which grants 10 minutes of free quantum computation per month. The 10-bit challenge required reducing shots to 1,024 to fit within the QPU time budget. Full execution logs are in the `executions/` folder.
 
->> **Important**: I believe that going beyond 10-bit with our implementation is feasible, at least up until 12-bit. But due to limited resources, I wasn't able to verify this claim.
+> **Important**: I believe that going beyond 10-bit with our implementation is feasible, at least up until 12-bit. But due to limited resources, I wasn't able to verify this claim.
 
 ## Noise and Fidelity Analysis
 
