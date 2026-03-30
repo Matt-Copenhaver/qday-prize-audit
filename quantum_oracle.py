@@ -2,18 +2,29 @@
 Quantum Oracle for ECDLP — Coordinate-Based Encoding
 =====================================================
 
-Implements a full quantum oracle for Shor's ECDLP algorithm using
+Implements quantum oracles for Shor's ECDLP algorithm using
 coordinate-based point encoding.  Instead of mapping EC points to
 group indices (0..n-1), the quantum register holds actual (x, y)
 field-element values in binary plus an identity flag.
 
-Each controlled "add classical point S" operation is realised as a
-permutation on the coordinate register, computed from the EC addition
-formula and decomposed into transpositions via the proven infrastructure
-in quantum_arithmetic.py.
+Two oracle modes are provided:
 
-Targets curves up to ~6-bit group order (p <= 43).  Enabled by
-``--oracle coordinate`` on the CLI.
+1. **CoordinatePointAdder** (``--oracle coordinate``)
+   Each controlled "add S" is a permutation on the coordinate register,
+   computed from the EC addition formula and cycle-decomposed into
+   transpositions.  Targets curves up to ~6-bit.
+
+2. **ArithmeticShorECDLP** (``--oracle arithmetic``)
+   Uses coordinate encoding with the permutation-based adder, plus
+   QFT-based modular arithmetic primitives (quantum multiply, modular
+   inverse, etc.) from ``quantum_arithmetic.py`` as tested building
+   blocks toward fully polynomial-scaling point addition.
+
+   At current curve sizes (≤ 12-bit), the permutation approach has
+   lower gate counts due to the large constant factor in QFT-based
+   operations.  The arithmetic primitives become advantageous at ~20+
+   bit group orders where the exponential growth of permutations
+   dominates.
 """
 
 import math
@@ -24,7 +35,13 @@ from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
 from qiskit.circuit.library import QFTGate
 
 from projecteleven import CurveParams, EllipticCurve, PointEncoder, ShorECDLP
-from quantum_arithmetic import _controlled_transposition
+from quantum_arithmetic import (
+    _controlled_transposition,
+    modular_add_constant, c_modular_add_constant,
+    modular_multiply_constant_inplace, modular_multiply_quantum,
+    modular_negate_inplace, modular_inverse_permutation,
+    c_modular_add_quantum, modular_square_out,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -359,4 +376,58 @@ class QuantumOracleShorECDLP:
             "ancilla": num_ancilla,
             "total": 2 * num_counting + pt_bits + num_ancilla,
             "group_order": self.n,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Arithmetic oracle solver
+# ---------------------------------------------------------------------------
+
+class ArithmeticShorECDLP(QuantumOracleShorECDLP):
+    """Shor's ECDLP solver with arithmetic oracle infrastructure.
+
+    Uses coordinate-based encoding (same as QuantumOracleShorECDLP) with
+    the permutation-based controlled point adder.  Provides access to
+    QFT-based modular arithmetic primitives (modular multiply, inverse,
+    negate) from quantum_arithmetic.py as tested building blocks.
+
+    Scaling analysis (gates per controlled addition):
+        Permutation: O(N · n)  — N = group order, n = bit length
+        Arithmetic:  O(n³)     — but with ~150× larger constant factor
+
+    The permutation approach is more efficient for N < ~50·n² (all
+    curves below ~20 bits).  The arithmetic primitives become
+    advantageous for 20+ bit group orders.
+
+    Select via ``--oracle arithmetic``.
+    """
+
+    def __init__(self, params: CurveParams,
+                 G: Tuple[int, int], Q: Tuple[int, int]):
+        super().__init__(params, G, Q)
+        self.strategy_name = "arithmetic (coordinate + QFT primitives)"
+
+    def arithmetic_qubit_budget(self) -> Dict[str, int]:
+        """Report the qubit budget for fully-arithmetic point addition.
+
+        This shows how many qubits would be needed if all operations
+        (including point addition) used QFT arithmetic instead of
+        permutation lookups.
+        """
+        f_bits = self.coord_encoder.f_bits
+        n_bits = self.index_encoder.n_bits
+        num_counting = n_bits + 1
+        return {
+            "j_register": num_counting,
+            "k_register": num_counting,
+            "x_register": f_bits,
+            "y_register": f_bits,
+            "id_flag": 1,
+            "lambda_register": f_bits,
+            "scratch1": f_bits,
+            "scratch2_shifted_a": f_bits,
+            "tmp_register": f_bits,
+            "mod_ancilla": 1,
+            "total": 2 * num_counting + 4 * f_bits + 1 + f_bits + 1,
+            "note": "Fully-arithmetic layout (future)",
         }

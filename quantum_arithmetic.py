@@ -266,12 +266,12 @@ def phi_add_constant(qc: QuantumCircuit, qubits: List[int],
                      n_bits: int, constant: int):
     """Add a classical constant to a register already in Fourier basis.
 
-    Convention: QFTGate(n) with do_swaps=True, so qubit j (j=0 = coarsest)
-    carries phase 2πx / 2^{j+1}.  Rotation to add *constant*:
-        P(2π · constant / 2^{j+1})  on qubit j.
+    Convention: QFTGate(n) includes bit-reversal swaps, so after QFT
+    qubit j (Qiskit LSB-first) carries phase 2πx / 2^{n-j}.
+    Rotation to add *constant*:  P(2π · constant / 2^{n-j})  on qubit j.
     """
     for j in range(n_bits):
-        denom = 1 << (j + 1)
+        denom = 1 << (n_bits - j)
         angle = 2 * math.pi * constant / denom
         # Skip trivially-zero rotations
         if abs(angle % (2 * math.pi)) > 1e-14:
@@ -282,7 +282,7 @@ def c_phi_add_constant(qc: QuantumCircuit, ctrl: int,
                        qubits: List[int], n_bits: int, constant: int):
     """Controlled: add classical constant in Fourier basis."""
     for j in range(n_bits):
-        denom = 1 << (j + 1)
+        denom = 1 << (n_bits - j)
         angle = 2 * math.pi * constant / denom
         if abs(angle % (2 * math.pi)) > 1e-14:
             qc.cp(angle, ctrl, qubits[j])
@@ -334,14 +334,19 @@ def modular_add_constant(qc: QuantumCircuit, qubits: List[int],
 def c_modular_add_constant(qc: QuantumCircuit, ctrl: int,
                            qubits: List[int], n_bits: int,
                            constant: int, p: int, ancilla: int):
-    """Controlled modular addition of a classical constant."""
+    """Controlled modular addition of a classical constant.
+
+    Beauregard's controlled modular adder: the p subtraction is unconditional
+    (not controlled on ctrl) so that the ancilla uncompute works correctly
+    when ctrl is part of a superposition.
+    """
     constant = constant % p
     qft = QFTGate(n_bits)
     iqft = qft.inverse()
 
     qc.append(qft, qubits)
     c_phi_add_constant(qc, ctrl, qubits, n_bits, constant)
-    c_phi_add_constant(qc, ctrl, qubits, n_bits, -p)
+    phi_add_constant(qc, qubits, n_bits, -p)
     qc.append(iqft, qubits)
     qc.cx(qubits[n_bits - 1], ancilla)
     qc.append(qft, qubits)
@@ -363,26 +368,34 @@ def phi_add_quantum(qc: QuantumCircuit, a_qubits: List[int],
                     b_qubits: List[int], n_bits: int):
     """Add quantum register |b⟩ to |a⟩ (a must be in QFT basis).
 
-    For each qubit a_j and each qubit b_k (k ≤ j):
-        CP(2π / 2^{j-k+1})  controlled by b_k on a_j.
+    After QFTGate (with swaps), qubit a_j carries frequency 2^j.
+    Phase from b_k on a_j: CP(2π / 2^{n-j-k}).
 
     Gate count: O(n²) CP gates.
     """
     for j in range(n_bits):
-        for k in range(j + 1):
-            angle = 2 * math.pi / (1 << (j - k + 1))
+        for k in range(n_bits):
+            exp = n_bits - j - k
+            if exp <= 0:
+                continue
+            angle = 2 * math.pi / (1 << exp)
             qc.cp(angle, b_qubits[k], a_qubits[j])
 
 
 def c_phi_add_quantum(qc: QuantumCircuit, ctrl: int,
-                      a_qubits: List[int], b_qubits: List[int], n_bits: int):
-    """Controlled: add |b⟩ to |a⟩ in QFT basis when ctrl=|1⟩.
+                      a_qubits: List[int], b_qubits: List[int],
+                      n_bits: int, sign: int = 1):
+    """Controlled: add sign*|b⟩ to |a⟩ in QFT basis when ctrl=|1⟩.
 
     Decomposes each doubly-controlled phase CCP(θ) into 2 CX + 3 CP gates.
+    Set sign=-1 to subtract.
     """
     for j in range(n_bits):
-        for k in range(j + 1):
-            angle = 2 * math.pi / (1 << (j - k + 1))
+        for k in range(n_bits):
+            exp = n_bits - j - k
+            if exp <= 0:
+                continue
+            angle = sign * 2 * math.pi / (1 << exp)
             # CCP(θ) on ctrl, b_k → a_j
             qc.cp(angle / 2, b_qubits[k], a_qubits[j])
             qc.cx(ctrl, b_qubits[k])
@@ -447,6 +460,170 @@ def modular_multiply_constant_inplace(qc: QuantumCircuit,
         # Subtract = add (p - addend)
         c_modular_add_constant(qc, x_qubits[k], tmp_qubits,
                                n_bits, (p - addend) % p, p, ancilla)
+
+
+# ---------------------------------------------------------------------------
+# Part 2c — Quantum-quantum modular arithmetic
+# ---------------------------------------------------------------------------
+
+def c_modular_add_quantum(qc: QuantumCircuit, ctrl: int,
+                          b_qubits: List[int],
+                          a_qubits: List[int],
+                          n_bits: int, p: int, ancilla: int):
+    """Controlled: |a⟩ → |a + b mod p⟩ when ctrl=|1⟩, |b⟩ unchanged.
+
+    Uses Beauregard's modular addition with unconditional p subtraction
+    for correct ancilla uncompute.
+    """
+    qft = QFTGate(n_bits)
+    iqft = qft.inverse()
+
+    qc.append(qft, a_qubits)
+    c_phi_add_quantum(qc, ctrl, a_qubits, b_qubits, n_bits)
+    phi_add_constant(qc, a_qubits, n_bits, -p)
+    qc.append(iqft, a_qubits)
+    qc.cx(a_qubits[n_bits - 1], ancilla)
+    qc.append(qft, a_qubits)
+    c_phi_add_constant(qc, ancilla, a_qubits, n_bits, p)
+    qc.append(iqft, a_qubits)
+
+    # Uncompute ancilla
+    qc.x(ancilla)
+    qc.append(qft, a_qubits)
+    c_phi_add_quantum(qc, ctrl, a_qubits, b_qubits, n_bits, sign=-1)
+    qc.append(iqft, a_qubits)
+    qc.cx(a_qubits[n_bits - 1], ancilla)
+    qc.append(qft, a_qubits)
+    c_phi_add_quantum(qc, ctrl, a_qubits, b_qubits, n_bits)
+    qc.append(iqft, a_qubits)
+
+
+def modular_multiply_quantum(qc: QuantumCircuit,
+                             a_qubits: List[int],
+                             b_qubits: List[int],
+                             out_qubits: List[int],
+                             shifted_a_qubits: List[int],
+                             tmp_qubits: List[int],
+                             n_bits: int,
+                             p: int,
+                             ancilla: int):
+    """Compute |a⟩|b⟩|0⟩ → |a⟩|b⟩|a·b mod p⟩.
+
+    Uses modular doubling to keep all intermediate values < p,
+    avoiding register overflow.
+
+    Requires scratch registers:
+      shifted_a_qubits[n_bits] — holds a·2^k mod p (starts/ends at |0⟩)
+      tmp_qubits[n_bits]       — scratch for modular_multiply_constant_inplace
+
+    Gate count: O(n³) — n iterations × O(n²) gates per modular add/double.
+    """
+    # Copy a → shifted_a
+    for i in range(n_bits):
+        qc.cx(a_qubits[i], shifted_a_qubits[i])
+
+    for k in range(n_bits):
+        # shifted_a = a·2^k mod p (always < p)
+        # Controlled on b[k]: out += shifted_a (mod p)
+        c_modular_add_quantum(qc, b_qubits[k], shifted_a_qubits,
+                              out_qubits, n_bits, p, ancilla)
+
+        # Double shifted_a for next iteration
+        if k < n_bits - 1:
+            modular_multiply_constant_inplace(qc, shifted_a_qubits, tmp_qubits,
+                                              n_bits, 2, p, ancilla)
+
+    # Uncompute shifted_a: currently holds a·2^{n-1} mod p
+    # Multiply by modular inverse of 2^{n-1} to get back to a
+    inv_shift = pow(pow(2, n_bits - 1, p), -1, p)
+    modular_multiply_constant_inplace(qc, shifted_a_qubits, tmp_qubits,
+                                      n_bits, inv_shift, p, ancilla)
+
+    # Un-copy: shifted_a == a now, so CX zeros it out
+    for i in range(n_bits):
+        qc.cx(a_qubits[i], shifted_a_qubits[i])
+
+
+# ---------------------------------------------------------------------------
+# Part 2d — Modular negation, inversion and squaring primitives
+# ---------------------------------------------------------------------------
+
+def modular_negate_inplace(qc: QuantumCircuit,
+                           qubits: List[int],
+                           tmp_qubits: List[int],
+                           n_bits: int, p: int, ancilla: int):
+    """Compute |x⟩ → |(-x) mod p⟩ = |(p-x) mod p⟩ in-place.
+
+    Implemented as multiplication by (p-1) mod p.
+    """
+    modular_multiply_constant_inplace(qc, qubits, tmp_qubits,
+                                      n_bits, p - 1, p, ancilla)
+
+
+def _build_permutation_transpositions(perm: List[int]) -> List[Tuple[int, int]]:
+    """Cycle-decompose a permutation into transpositions."""
+    n = len(perm)
+    transpositions = []
+    visited = [False] * n
+    for start in range(n):
+        if visited[start] or perm[start] == start:
+            visited[start] = True
+            continue
+        cycle = []
+        j = start
+        while not visited[j]:
+            visited[j] = True
+            cycle.append(j)
+            j = perm[j]
+        for idx in range(len(cycle) - 1, 0, -1):
+            transpositions.append((cycle[0], cycle[idx]))
+    return transpositions
+
+
+def modular_inverse_permutation(qc: QuantumCircuit,
+                                qubits: List[int],
+                                n_bits: int, p: int):
+    """Compute |x⟩ → |x⁻¹ mod p⟩ in-place (0 maps to 0).
+
+    Uses a pre-computed lookup table decomposed into transpositions.
+    """
+    dim = 1 << n_bits
+    perm = list(range(dim))
+    for v in range(1, p):
+        perm[v] = pow(v, -1, p)
+
+    for a, b in _build_permutation_transpositions(perm):
+        _apply_transposition(qc, a, b, qubits, n_bits)
+
+
+def c_modular_inverse_permutation(qc: QuantumCircuit, ctrl: int,
+                                  qubits: List[int],
+                                  n_bits: int, p: int,
+                                  ancilla_qubits: List[int] = None):
+    """Controlled modular inversion via permutation lookup."""
+    dim = 1 << n_bits
+    perm = list(range(dim))
+    for v in range(1, p):
+        perm[v] = pow(v, -1, p)
+
+    for a, b in _build_permutation_transpositions(perm):
+        _controlled_transposition(qc, ctrl, a, b, qubits, n_bits, ancilla_qubits)
+
+
+def modular_square_out(qc: QuantumCircuit,
+                       x_qubits: List[int],
+                       out_qubits: List[int],
+                       shifted_a_qubits: List[int],
+                       tmp_qubits: List[int],
+                       n_bits: int, p: int, ancilla: int):
+    """Compute |x⟩|0⟩ → |x⟩|x² mod p⟩ using quantum-quantum multiply.
+
+    Note: x → x² is NOT a permutation (not injective), so it cannot be
+    done in-place via transpositions. Uses modular_multiply_quantum instead.
+    """
+    modular_multiply_quantum(qc, x_qubits, x_qubits, out_qubits,
+                             shifted_a_qubits, tmp_qubits,
+                             n_bits, p, ancilla)
 
 
 # ---------------------------------------------------------------------------

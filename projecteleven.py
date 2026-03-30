@@ -374,7 +374,11 @@ def solve_ecdlp(
     n_bits = max(1, (n - 1).bit_length())
 
     # Strategy selection: explicit --oracle flag overrides auto-selection.
-    if oracle == "coordinate":
+    if oracle == "arithmetic":
+        from quantum_oracle import ArithmeticShorECDLP
+        solver = ArithmeticShorECDLP(params, G, Q)
+        strategy = "arithmetic (coordinate + QFT primitives)"
+    elif oracle == "coordinate":
         from quantum_oracle import QuantumOracleShorECDLP
         solver = QuantumOracleShorECDLP(params, G, Q)
         strategy = "coordinate oracle"
@@ -506,7 +510,7 @@ if __name__ == "__main__":
                         help="IBM Quantum API token. Saves to local account on first use.")
     parser.add_argument("--instance", type=str, default="open-instance",
                         help="IBM Quantum instance (default: open-instance)")
-    parser.add_argument("--oracle", choices=["dense", "permutation", "coordinate"],
+    parser.add_argument("--oracle", choices=["dense", "permutation", "coordinate", "arithmetic"],
                         default=None,
                         help="Oracle strategy (default: auto-select based on curve size)")
     parser.add_argument("--optimization-level", type=int, default=3, choices=[0, 1, 2, 3],
