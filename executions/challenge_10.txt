@@ -1,0 +1,37 @@
+(quantum) PS C:\Git\_personal\quantum> python projecteleven.py --challenge 10 --backend ibm_torino --shots 1024 --optimization-level 3
+
+Challenge curve: 10-bit
+p = 547, n = 547
+G = (386, 359)
+Q = (286, 462)
+
+============================================================
+SHOR'S ALGORITHM FOR ECDLP
+Q-Day Prize: https://www.qdayprize.org/
+============================================================
+
+Curve: y^2 = x^3 + 0x + 7 (mod 547)
+Group order: n = 547
+Generator: G = (386, 359)
+Target: Q = (286, 462)
+Strategy: efficient permutation
+
+Qubits: 40 total
+Circuit depth: 25
+
+Backend: ibm_torino
+Transpiled depth: 3948250
+Two-qubit gates: 2049138
+Job ID: d752vfu8faus73evhovg
+Waiting for results...
+
+Unique outcomes: 1024
+
+============================================================
+RESULT: d = 165
+Verification: 165*G = (286, 462)
+[OK] VERIFIED
+============================================================
+
+[OK] SUCCESS: Recovered correct secret key
+(quantum) PS C:\Git\_personal\quantum>

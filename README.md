@@ -95,18 +95,19 @@ All execution targets **IBM Quantum hardware** via `qiskit-ibm-runtime`. There i
 
 ## Results
 
-Successfully recovered private keys on IBM Quantum hardware for challenge curves up to 9-bit:
+Successfully recovered private keys on IBM Quantum hardware for challenge curves up to 10-bit:
 
-| Challenge | p | n | Strategy | Qubits | 2Q Gates | Transpiled Depth | Backend | Recovered d | Job ID |
-|-----------|-----|------|----------|--------|----------|------------------|-------------|-------------|--------|
-| 4-bit | 13 | 7 | Dense unitary | 11 | 774 | 2,425 | ibm_torino | 6 | d73u28kvllmc73anvi90 |
-| 4-bit | 13 | 7 | Coordinate oracle | 24 | 6,449 | 13,125 | ibm_kingston | 6 | d74ht798qmgc73fm32c0 |
-| 6-bit | 43 | 31 | Dense unitary | 17 | 23,471 | 72,475 | ibm_torino | 18 | d73u2l5koquc73e24u8g |
-| 6-bit | 43 | 31 | Coordinate oracle | 36 | 95,254 | 169,766 | ibm_kingston | 18 | d74hu918qmgc73fm33g0 |
-| 8-bit | 163 | 139 | Efficient permutation | 32 | 294,628 | 599,517 | ibm_kingston | 103 | d73ui15koquc73e25e4g |
-| 9-bit | 349 | 313 | Efficient permutation | 36 | 887,544 | 1,764,266 | ibm_torino | 135 | d73ua2h8qmgc73flei9g |
+| Challenge | p | n | Strategy | Qubits | 2Q Gates | Transpiled Depth | Shots | Backend | Recovered d | Job ID |
+|-----------|-----|------|----------|--------|----------|------------------|-------|-------------|-------------|--------|
+| 4-bit | 13 | 7 | Dense unitary | 11 | 774 | 2,425 | 8,192 | ibm_torino | 6 | d73u28kvllmc73anvi90 |
+| 4-bit | 13 | 7 | Coordinate oracle | 24 | 6,449 | 13,125 | 8,192 | ibm_kingston | 6 | d74ht798qmgc73fm32c0 |
+| 6-bit | 43 | 31 | Dense unitary | 17 | 23,471 | 72,475 | 8,192 | ibm_torino | 18 | d73u2l5koquc73e24u8g |
+| 6-bit | 43 | 31 | Coordinate oracle | 36 | 95,254 | 169,766 | 8,192 | ibm_kingston | 18 | d74hu918qmgc73fm33g0 |
+| 8-bit | 163 | 139 | Efficient permutation | 32 | 294,628 | 599,517 | 8,192 | ibm_kingston | 103 | d73ui15koquc73e25e4g |
+| 9-bit | 349 | 313 | Efficient permutation | 36 | 887,544 | 1,764,266 | 8,192 | ibm_torino | 135 | d73ua2h8qmgc73flei9g |
+| 10-bit | 547 | 547 | Efficient permutation | 40 | 2,049,138 | 3,948,250 | 1,024 | ibm_torino | 165 | d752vfu8faus73evhovg |
 
-All runs used 8,192 shots and were executed on the IBM Quantum open-instance plan, which grants 10 minutes of free quantum computation per month. Full execution logs are in the `executions/` folder.
+All runs were executed on the IBM Quantum open-instance plan, which grants 10 minutes of free quantum computation per month. The 10-bit challenge required reducing shots to 1,024 to fit within the QPU time budget. Full execution logs are in the `executions/` folder.
 
 ## Quick Start
 
@@ -152,6 +153,7 @@ python projecteleven.py --curve curve_4 --verify-only
 | `--instance ID` | IBM Quantum instance | `open-instance` |
 | `--shots N` | Number of measurement shots | `8192` |
 | `--oracle TYPE` | Oracle strategy: `dense`, `permutation`, or `coordinate` | auto |
+| `--optimization-level N` | Qiskit transpilation optimization level (0-3) | `3` |
 | `--d N` | Known secret key for testing (with `--curve`) | — |
 | `--verify-only` | Validate curve parameters and exit | — |
 

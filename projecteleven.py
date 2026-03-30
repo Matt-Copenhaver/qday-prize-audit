@@ -359,6 +359,7 @@ def solve_ecdlp(
     instance: str = "open-instance",
     verbose: bool = True,
     oracle: Optional[str] = None,
+    optimization_level: int = 3,
 ) -> Optional[int]:
     """Solve ECDLP using Shor's algorithm on IBM Quantum hardware."""
     from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2
@@ -412,7 +413,7 @@ def solve_ecdlp(
     if verbose:
         print(f"\nBackend: {backend.name}")
 
-    qc_t = transpile(qc, backend, optimization_level=3)
+    qc_t = transpile(qc, backend, optimization_level=optimization_level)
 
     if verbose:
         print(f"Transpiled depth: {qc_t.depth()}")
@@ -508,6 +509,8 @@ if __name__ == "__main__":
     parser.add_argument("--oracle", choices=["dense", "permutation", "coordinate"],
                         default=None,
                         help="Oracle strategy (default: auto-select based on curve size)")
+    parser.add_argument("--optimization-level", type=int, default=3, choices=[0, 1, 2, 3],
+                        help="Qiskit transpilation optimization level (default: 3)")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
 
@@ -570,6 +573,7 @@ if __name__ == "__main__":
         token=args.token,
         instance=args.instance,
         oracle=args.oracle,
+        optimization_level=args.optimization_level,
     )
 
     if result is not None and d_expected is not None:
