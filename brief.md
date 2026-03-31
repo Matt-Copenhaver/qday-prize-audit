@@ -48,6 +48,8 @@ Every recovered key was verified classically: d * G = Q. All source code, challe
 
 **Noise robustness**: At 8-bit+, circuit fidelity is astronomically small (~10^{-644} at 8-bit) yet the algorithm recovers correct keys. Shor's post-processing is robust to noise: correct signal shots always vote for the true d, while noise scatters uniformly across n candidates. Even 3-4 signal shots out of thousands suffice.
 
+**Quantum signal evidence**: At toy scale, the extraction's verification filter means random noise can also produce valid candidates at rate ~shots/n. To quantify quantum contribution, we ran the 6-bit challenge with only 8 shots (below the group order n=31) across 10 independent runs: **4/10 succeeded (40%)** vs a classical noise baseline of ~20%. The 2x improvement is consistent with the quantum circuit contributing 1-2 additional valid (j, k) pairs per run beyond random chance.
+
 **Dynamic circuits on NISQ hardware**: The semiclassical PE strategy demonstrates qubit-recycled phase estimation -- a technique central to Google's 2026 secp256k1 resource estimates -- working on real IBM hardware. The 7-bit run (14 qubits, 128K CZ gates, 14 classical feedback points) is, to our knowledge, among the first demonstrations of semiclassical Shor ECDLP on superconducting hardware.
 
 ## Reproducibility

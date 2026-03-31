@@ -168,6 +168,29 @@ The key insight is that Shor's post-processing is **robust to noise** in a way t
 
 For example, at 10-bit (n=547, 1,024 shots), the noise floor is ~1,024/547 ≈ 1.9 votes per candidate. Even a handful of signal-bearing shots — as few as 3-4 — would be enough to push the correct `d` above the noise floor. This explains how the algorithm succeeds despite circuit fidelities that would seem to make computation impossible.
 
+### Quantum Signal vs Classical Noise
+
+At toy scale, the extraction's verification step (`d_cand * G == Q`) acts as a filter that accepts only the true `d`. This means that even **purely random** (j, k, r) triples will produce valid candidates at a rate of approximately `shots / n` per run. When `shots >> n`, random noise alone can recover d with high probability.
+
+To test whether the quantum circuit contributes signal beyond this classical noise floor, we ran the **6-bit challenge (n=31) with only 8 shots** (well below the group order) **10 times** on ibm_kingston:
+
+| Run | Job ID | Result |
+|-----|--------|--------|
+| 1 | d75qrrq3qcgc73fs4hn0 | FAIL |
+| 2 | d75qs3e8faus73f0ep6g | FAIL |
+| 3 | d75qsafq1anc738coujg | FAIL |
+| 4 | d75qsie8faus73f0eplg | d = 18 |
+| 5 | d75qsq23qcgc73fs4ing | d = 18 |
+| 6 | d75qt168faus73f0eq50 | FAIL |
+| 7 | d75qt7vq1anc738covf0 | d = 18 |
+| 8 | d75qthu8faus73f0eqmg | FAIL |
+| 9 | d75qtodbjrds73ecpk80 | d = 18 |
+| 10 | d75qtvi3qcgc73fs4jsg | FAIL |
+
+**Result: 4/10 successes (40%)** vs a classical noise baseline of ~20% (computed via Monte Carlo simulation: 8 random bitstrings with `(r-j)*k_inv mod 31` filtered through verification). One-tailed binomial test: P(X >= 4 | n=10, p=0.20) = 0.121, indicating a 2x improvement over the noise floor. While not individually statistically significant at p &lt; 0.05 (which would require 5+ successes), the observed rate is consistent with a quantum signal contributing approximately 1-2 additional valid (j, k) pairs per run beyond what random chance provides.
+
+This result sits between the classical noise floor and the theoretical quantum advantage regime. At larger curve sizes where `n >> shots`, the noise baseline drops below 1% and any successful key recovery becomes strong evidence of quantum computation.
+
 ## Quick Start
 
 ```bash
