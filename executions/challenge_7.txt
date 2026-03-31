@@ -1,0 +1,37 @@
+(quantum) PS C:\Git\_personal\quantum> python projecteleven.py --challenge 7 --oracle google --backend ibm_kingston --shots 256
+
+Challenge curve: 7-bit
+p = 67, n = 79
+G = (48, 60)
+Q = (52, 7)
+
+============================================================
+SHOR'S ALGORITHM FOR ECDLP
+Q-Day Prize: https://www.qdayprize.org/
+============================================================
+
+Curve: y^2 = x^3 + 0x + 7 (mod 67)
+Group order: n = 79
+Generator: G = (48, 60)
+Target: Q = (52, 7)
+Strategy: Google semiclassical PE (qubit-recycled)
+
+Qubits: 14 total
+Circuit depth: 89
+
+Backend: ibm_kingston
+Transpiled depth: 266122
+Two-qubit gates: 127918
+Job ID: d75p3sq3qcgc73fs2fpg
+Waiting for results...
+
+Unique outcomes: 256
+
+============================================================
+RESULT: d = 56
+Verification: 56*G = (52, 7)
+[OK] VERIFIED
+============================================================
+
+[OK] SUCCESS: Recovered correct secret key
+(quantum) PS C:\Git\_personal\quantum>

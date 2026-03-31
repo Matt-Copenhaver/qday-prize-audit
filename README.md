@@ -17,7 +17,7 @@ All challenge curves use **y^2 = x^3 + 7** over F_p (a = 0, b = 7), matching the
 4. Apply inverse QFT to the counting registers
 5. Measure j, k and extract d from the relation j + kd = r (mod n)
 
-The private key d is recovered by collecting multiple (j, k) samples that satisfy the same linear relation modulo the group order n. The solver supports four oracle strategies for the controlled point additions, selected automatically based on curve size or manually via `--oracle`.
+The private key d is recovered by collecting multiple (j, k) samples that satisfy the same linear relation modulo the group order n. The solver supports five oracle strategies for the controlled point additions, selected automatically based on curve size or manually via `--oracle`.
 
 ## Oracle Strategies
 
@@ -78,17 +78,37 @@ Uses coordinate encoding (same as Strategy 3) with QFT-based modular arithmetic 
 
 The arithmetic primitives achieve O(n^3) scaling per point addition vs O(N*n) for the permutation approach. However, the QFT-based operations carry a ~150x larger constant factor, making the arithmetic approach more efficient only for curves above ~20-bit group order. For current challenge sizes (up to 12-bit), the permutation-based adder remains faster and is used by default.
 
+### Strategy 5: Google Semiclassical Phase Estimation (`--oracle google`)
+
+Implemented in `google_semiclassical.py`. Inspired by the qubit-recycled phase estimation technique from Griffiths &amp; Niu (1996), applied at scale in Babbush et al. (2026) for secp256k1 ECDLP resource estimates. The Babbush et al. paper was published on March 30, 2026.
+
+Replaces the two multi-qubit counting registers (j, k) and bulk inverse QFT with **two single recycled qubits** and classically-conditioned phase corrections. Each counting register bit is processed sequentially: prepare in |+&gt;, apply controlled point addition, correct phase based on all previously measured bits, then measure. The `reset` + `if_test` dynamic circuit primitives in Qiskit enable this on IBM Quantum hardware.
+
+The oracle for controlled point additions is delegated to the existing infrastructure (dense unitary for &lt;= 6-bit, efficient permutation for &gt; 6-bit), so the qubit savings come entirely from eliminating the counting registers.
+
+| Curve size | Standard qubits | Semiclassical qubits | Savings | Hardware verified |
+|------------|----------------|---------------------|---------|-------------------|
+| 4-bit (n=7) | 11 | 5 | 55% | Yes |
+| 6-bit (n=31) | 17 | 7 | 59% | Yes |
+| 7-bit (n=79) | 26 + anc | 14 | 46% | Yes |
+| 8-bit (n=139) | 25 + anc | 10 + anc | 60% | No (QPU sync overhead) |
+| 10-bit (n=547) | 31 + anc | 12 + anc | 61% | No (QPU sync overhead) |
+
+- **Encoding**: Same as underlying strategy (group index)
+- **Qubits**: 2 + n_bits + ancillas (vs 2t + n_bits + ancillas)
+- **Trade-off**: Requires dynamic circuits (mid-circuit measurement, reset, classically-conditioned gates). Works on IBM Heron r2 up to 7-bit; at 8-bit+ the classical feedback synchronization overhead exceeds the QPU time budget
+
 ### Comparison
 
-| Metric | Dense Unitary | Efficient Permutation | Coordinate Oracle | Arithmetic Oracle |
-|--------|--------------|----------------------|-------------------|-------------------|
-| Point encoding | Group index | Group index | (x, y, id_flag) | (x, y, id_flag) |
-| Scaling per addition | O(4^n) decomp. | O(N * n) | O(N * f_bits) | O(n^3) asymptotic |
-| Qubits (4-bit) | 11 | 13 | 24 | 24 |
-| Qubits (6-bit) | 17 | 21 | 36 | 36 |
-| 2Q gates (4-bit) | 774 | ~1,200 | 6,449 | 6,449 |
-| 2Q gates (6-bit) | 23,471 | ~38,000 | 95,254 | 95,254 |
-| Practical range | <= 6-bit | <= ~16-bit | <= 6-bit | >= 20-bit (future) |
+| Metric | Dense Unitary | Efficient Permutation | Coordinate Oracle | Arithmetic Oracle | Semiclassical PE |
+|--------|--------------|----------------------|-------------------|-------------------|------------------|
+| Point encoding | Group index | Group index | (x, y, id_flag) | (x, y, id_flag) | Group index |
+| Scaling per addition | O(4^n) decomp. | O(N * n) | O(N * f_bits) | O(n^3) asymptotic | O(N * n) |
+| Qubits (4-bit) | 11 | 13 | 24 | 24 | 5 |
+| Qubits (6-bit) | 17 | 21 | 36 | 36 | 9 |
+| 2Q gates (4-bit) | 774 | ~1,200 | 6,449 | 6,449 | ~1,200 |
+| 2Q gates (6-bit) | 23,471 | ~38,000 | 95,254 | 95,254 | ~38,000 |
+| Practical range | &lt;= 6-bit | &lt;= ~16-bit | &lt;= 6-bit | &gt;= 20-bit (future) | &lt;= ~16-bit |
 
 ### QFT Arithmetic Primitives
 
@@ -103,8 +123,11 @@ Successfully recovered private keys on IBM Quantum hardware for challenge curves
 | 4-bit | 13 | 7 | Dense unitary | 11 | 774 | 2,425 | 8,192 | ibm_torino | 6 | d73u28kvllmc73anvi90 |
 | 4-bit | 13 | 7 | Coordinate oracle | 24 | 6,449 | 13,125 | 8,192 | ibm_kingston | 6 | d74ht798qmgc73fm32c0 |
 | 4-bit | 13 | 7 | Arithmetic oracle | 24 | 6,477 | 13,452 | 8,192 | ibm_torino | 6 | d75648lbjrds73ec0eng |
+| 4-bit | 13 | 7 | Semiclassical PE | 5 | 747 | 2,522 | 256 | ibm_kingston | 6 | d75p1ftbjrds73ecne3g |
 | 6-bit | 43 | 31 | Dense unitary | 17 | 23,471 | 72,475 | 8,192 | ibm_torino | 18 | d73u2l5koquc73e24u8g |
 | 6-bit | 43 | 31 | Coordinate oracle | 36 | 95,254 | 169,766 | 8,192 | ibm_kingston | 18 | d74hu918qmgc73fm33g0 |
+| 6-bit | 43 | 31 | Semiclassical PE | 7 | 23,256 | 73,183 | 256 | ibm_kingston | 18 | d75p1unq1anc738cmr6g |
+| 7-bit | 67 | 79 | Semiclassical PE | 14 | 127,918 | 266,122 | 256 | ibm_kingston | 56 | d75p3sq3qcgc73fs2fpg |
 | 8-bit | 163 | 139 | Efficient permutation | 32 | 294,628 | 599,517 | 8,192 | ibm_kingston | 103 | d73ui15koquc73e25e4g |
 | 9-bit | 349 | 313 | Efficient permutation | 36 | 887,544 | 1,764,266 | 8,192 | ibm_torino | 135 | d73ua2h8qmgc73flei9g |
 | 10-bit | 547 | 547 | Efficient permutation | 40 | 2,049,138 | 3,948,250 | 1,024 | ibm_torino | 165 | d752vfu8faus73evhovg |
@@ -112,6 +135,14 @@ Successfully recovered private keys on IBM Quantum hardware for challenge curves
 All runs were executed on the IBM Quantum open-instance plan, which grants 10 minutes of free quantum computation per month. The 10-bit challenge required reducing shots to 1,024 to fit within the QPU time budget. Full execution logs are in the `executions/` folder.
 
 > **Important**: I believe that going beyond 10-bit with our implementation is feasible, at least up until 12-bit. But due to limited resources, I wasn't able to verify this claim.
+
+### Semiclassical PE: Dynamic Circuits on IBM Hardware
+
+The semiclassical strategy (`--oracle google`) successfully recovered keys at 4-bit, 6-bit, and 7-bit using dynamic circuits (mid-circuit `reset`, classically-conditioned `p` gates via `if_test`) on IBM Heron r2 processors. At 7-bit, the circuit uses only **14 qubits** (vs 26 for the standard permutation approach) while producing comparable 2Q gate counts after transpilation.
+
+At 8-bit and above, the semiclassical approach becomes impractical on current IBM hardware. Although `if_else` and `reset` are supported on Heron r2 (confirmed via backend target inspection), each classical feedback point requires a full QPU synchronization — all 156 physical qubits must idle while the classical controller processes the conditional for the ~16 active qubits. With ~295K CZ gates split across 16+ feedback points, the per-shot execution overhead makes jobs exceed the QPU time budget. The standard permutation approach, which runs the same gate count as a single continuous batch without dynamic circuits, completes successfully at this scale.
+
+An approximate QFT truncation (`max_corrections` parameter) reduces the number of `if_else` blocks from O(n^2) to O(n) by retaining only the nearest k phase corrections per measurement step (angles beyond k contribute &lt; pi/2^{k+1}, below the hardware noise floor). With `max_corrections=1`, the 8-bit circuit has 16 `if_else` blocks — still sufficient to cause timeout on IBM hardware at this gate count.
 
 ## Noise and Fidelity Analysis
 
@@ -166,6 +197,9 @@ python projecteleven.py --challenge 4 --oracle coordinate --backend ibm_marrakes
 # Use the arithmetic oracle (coordinate encoding + QFT primitives):
 python projecteleven.py --challenge 4 --oracle arithmetic --backend ibm_marrakesh
 
+# Use Google semiclassical phase estimation (qubit-recycled):
+python projecteleven.py --challenge 4 --oracle google --backend ibm_marrakesh
+
 # Use a specific IBM Quantum instance:
 python projecteleven.py --challenge 4 --instance ibm-q/open/main --backend ibm_marrakesh
 
@@ -183,7 +217,7 @@ python projecteleven.py --curve curve_4 --verify-only
 | `--backend NAME` | IBM Quantum backend | `ibm_marrakesh` |
 | `--instance ID` | IBM Quantum instance | `open-instance` |
 | `--shots N` | Number of measurement shots | `8192` |
-| `--oracle TYPE` | Oracle strategy: `dense`, `permutation`, `coordinate`, or `arithmetic` | auto |
+| `--oracle TYPE` | Oracle strategy: `dense`, `permutation`, `coordinate`, `arithmetic`, or `google` | auto |
 | `--optimization-level N` | Qiskit transpilation optimization level (0-3) | `3` |
 | `--d N` | Known secret key for testing (with `--curve`) | — |
 | `--verify-only` | Validate curve parameters and exit | — |
@@ -191,12 +225,13 @@ python projecteleven.py --curve curve_4 --verify-only
 ## Project Structure
 
 ```
-projecteleven.py        # Shor solver — dense unitary approach + CLI entry point
-quantum_arithmetic.py   # Efficient permutation decomposition + QFT arithmetic primitives
-quantum_oracle.py       # Coordinate-based oracle + arithmetic oracle framework
-input_curves.json       # Challenge curves (4-bit to 30-bit)
-problem/curves.py       # Curve generation utility
-requirements.txt        # qiskit, qiskit-ibm-runtime
+projecteleven.py            # Shor solver — dense unitary approach + CLI entry point
+quantum_arithmetic.py       # Efficient permutation decomposition + QFT arithmetic primitives
+quantum_oracle.py           # Coordinate-based oracle + arithmetic oracle framework
+google_semiclassical.py     # Google semiclassical PE — qubit-recycled phase estimation
+input_curves.json           # Challenge curves (4-bit to 30-bit)
+problem/curves.py           # Curve generation utility
+requirements.txt            # qiskit, qiskit-ibm-runtime
 ```
 
 ## References
@@ -204,6 +239,8 @@ requirements.txt        # qiskit, qiskit-ibm-runtime
 - P. Shor, ["Algorithms for Quantum Computation: Discrete Logarithms and Factoring"](https://arxiv.org/abs/quant-ph/9508027) (1994)
 - S. Beauregard, ["Circuit for Shor's algorithm using 2n+3 qubits"](https://arxiv.org/abs/quant-ph/0205095) (2003)
 - M. Roetteler, M. Naehrig, K. Svore, K. Lauter, ["Quantum resource estimates for computing elliptic curve discrete logarithms"](https://arxiv.org/abs/1706.06752) (2017)
+- R. Griffiths, C.-S. Niu, ["Semiclassical Fourier Transform for Quantum Computation"](https://arxiv.org/abs/quant-ph/9511007) (1996)
+- R. Babbush et al., ["Securing Elliptic Curve Cryptocurrencies against Quantum Vulnerabilities: Resource Estimates and Mitigations"](https://quantumai.google/static/site-assets/downloads/cryptocurrency-whitepaper.pdf) (2026)
 
 ## License
 
