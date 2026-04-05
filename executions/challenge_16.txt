@@ -1,0 +1,37 @@
+(quantum) PS C:\Git\_personal\quantum> python projecteleven.py --challenge 16 --oracle ripple --backend ibm_fez --shots 20000
+
+Challenge curve: 16-bit
+p = 32803, n = 32497
+G = (14333, 24084)
+Q = (31890, 7753)
+
+============================================================
+SHOR'S ALGORITHM FOR ECDLP
+Q-Day Prize: https://www.qdayprize.org/
+============================================================
+
+Curve: y^2 = x^3 + 0x + 7 (mod 32803)
+Group order: n = 32497
+Generator: G = (14333, 24084)
+Target: Q = (31890, 7753)
+Strategy: ripple-carry modular addition (CDKM)
+
+Qubits: 65 total
+Circuit depth: 33
+
+Backend: ibm_fez
+Transpiled depth: 202994
+Two-qubit gates: 98049
+Job ID: d790j2hq1efs73d2979g
+Waiting for results...
+
+Unique outcomes: 20000
+
+============================================================
+RESULT: d = 20248
+Verification: 20248*G = (31890, 7753)
+[OK] VERIFIED
+============================================================
+
+[OK] SUCCESS: Recovered correct secret key
+(quantum) PS C:\Git\_personal\quantum>
