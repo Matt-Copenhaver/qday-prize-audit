@@ -1,0 +1,55 @@
+{
+  "run_id": "audit_4bit_20260424_185630",
+  "timestamp_utc": "2026-04-24T19:00:18.496575+00:00",
+  "challenge": {
+    "bit_length": 4,
+    "p": 13,
+    "a": 0,
+    "b": 7,
+    "n": 7,
+    "G": [
+      11,
+      5
+    ],
+    "Q": [
+      11,
+      8
+    ],
+    "true_d": 6
+  },
+  "hardware": {
+    "backend": "ibm_fez",
+    "job_id": "d7lrppat99kc73d1p8bg",
+    "shots": 8192,
+    "optimization_level": 3
+  },
+  "circuit": {
+    "oracle_strategy": "dense unitary",
+    "logical_qubits": 11,
+    "transpiled_depth": 2437,
+    "two_qubit_gates": 728,
+    "transpiled_qubits": 156,
+    "gate_ops": {
+      "sx": 1917,
+      "rz": 1580,
+      "cz": 728,
+      "x": 17,
+      "measure": 11
+    },
+    "estimated_fidelity": 0.6948911947429106
+  },
+  "measurement": {
+    "unique_outcomes": 1915,
+    "total_shots": 8192,
+    "counts_file": "raw_counts.json"
+  },
+  "extraction": {
+    "method": "extract_discrete_log (original, with _verify)",
+    "result_d": 6,
+    "correct": true
+  },
+  "provenance": {
+    "source_code_hash_sha256": "82a872759588833109b6318d1257cfbbd1e4f5955cd6975510de1e4dd77789c0",
+    "audit_script": "run_audited.py"
+  }
+}
