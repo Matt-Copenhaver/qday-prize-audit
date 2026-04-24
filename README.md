@@ -1,3 +1,99 @@
+# Independent Audit of Q-Day Prize Winning Submission
+
+**Auditor:** Matt Copenhaver ([matt@visitor.us](mailto:matt@visitor.us))  
+**Date:** April 24, 2026  
+**Subject:** GiancarloLelli's Q-Day Prize submission — 15-bit ECDLP key recovery  
+**Fork of:** [GiancarloLelli/quantum](https://github.com/GiancarloLelli/quantum)
+
+## Summary of Findings
+
+GiancarloLelli's key recovery does not depend on quantum signal. The extraction procedure (`extract_discrete_log`) classically brute-forces the answer by checking every candidate against `d*G == Q` (the `_verify()` function at lines 282, 301, and 333–339 of `projecteleven.py`). This filter guarantees finding the correct private key from **any** input — including uniformly random bitstrings with no quantum computation whatsoever.
+
+We reproduced the 15-bit key break on the same hardware (ibm_fez) using his exact code and oracle (ripple-carry CDKM), then ran an ablation that removes `_verify()` to test whether the quantum circuit contributes any signal.
+
+### Evidence
+
+**Hardware reproduction (15-bit, ibm_fez, ripple-carry oracle):**
+
+| Run | Shots | 2Q Gates | Unique Outcomes | Est. Fidelity | d found? |
+|-----|-------|----------|-----------------|---------------|----------|
+| [8k shots](results/audit_15bit_20260424_191804/) | 8,192 | 101,899 | 8,192 (100%) | ~10⁻²² | Yes, via `_verify()` |
+| [32k shots](results/audit_15bit_20260424_193806/) | 32,768 | 101,042 | 32,768 (100%) | ~10⁻²² | Yes, via `_verify()` |
+
+Every shot produced a unique bitstring — the output is indistinguishable from uniform random noise. At 101k two-qubit gates with ~99.95% per-gate fidelity, the estimated circuit fidelity is ~10⁻²², meaning the probability of any single shot carrying quantum signal is effectively zero.
+
+**Ablation: extraction with vs without `_verify()`:**
+
+| Run | With `_verify()` | Without `_verify()`: rank of true d | z-score |
+|-----|-----------------|-------------------------------------|---------|
+| [8k shots](results/ablation_15bit_20260424_192625/) | d=14794 found (1 verified candidate, 3 votes) | Rank 97 of 6,524 | +3.58 |
+| [32k shots](results/ablation_15bit_20260424_194607/) | d=14794 found (1 verified candidate, 3 votes) | Rank 3,955 of 14,340 | +0.74 |
+
+With `_verify()` removed, the true key is buried in noise — rank 3,955 out of 14,340 candidates at 32k shots, with a z-score of +0.74 (well below the z > 3 threshold for statistical significance). Notably, the true d received exactly 3 votes in both the 8k and 32k runs, confirming it is not accumulating signal with more shots.
+
+The 8k run's rank of 97 (top 1.5%) was a statistical fluke that disappeared with more data — exactly the behavior expected from noise.
+
+### How `_verify()` works
+
+In `projecteleven.py`, every candidate d produced by the Shor extraction formula `d = (r - j) * k⁻¹ mod n` is immediately tested:
+
+```python
+# Line 282 (direct path):
+if self._verify(d_cand):
+    candidates[d_cand] = candidates.get(d_cand, 0) + count
+
+# Lines 333-339 (_verify implementation):
+def _verify(self, d: int) -> bool:
+    if d == 0:
+        return self.Q is None
+    if d < 0 or d >= self.n:
+        return False
+    return self.ec.scalar_mult(d, self.G) == self.Q
+```
+
+This is a classical brute-force search: compute `d*G` and check if it equals `Q`. Only the true private key passes this test. The quantum circuit's output is irrelevant — any distribution of bitstrings that produces at least one candidate equal to the true d will "succeed," and with enough shots, random noise guarantees this.
+
+### The author's own analysis confirms this
+
+The original README (preserved below) contains a "Noise and Fidelity Analysis" section that acknowledges:
+
+> *"For 8-bit and above, every shot produces a nearly unique bitstring. The output is indistinguishable from uniform random sampling at the bitstring level."*
+
+And:
+
+> *"Only the true d passes EC verification, so even a single correct candidate among thousands of noise shots suffices."*
+
+The author frames this as the algorithm being "robust to noise." In fact, it demonstrates that `_verify()` is doing all the work — the quantum circuit contributes nothing.
+
+### Reproducing this audit
+
+All code and data are in this repo. No quantum hardware is needed to verify the ablation:
+
+```bash
+# Replay ablation on saved 32k-shot counts (no hardware needed):
+python3 run_ablation.py --challenge 15 --oracle ripple \
+  --counts results/audit_15bit_20260424_193806/raw_counts.json
+
+# Replay ablation on saved 8k-shot counts:
+python3 run_ablation.py --challenge 15 --oracle ripple \
+  --counts results/audit_15bit_20260424_191804/raw_counts.json
+```
+
+### Audit tools added to this fork
+
+| File | Purpose |
+|------|---------|
+| `run_audited.py` | Wraps the original code but saves raw counts, circuit metrics, and job metadata |
+| `run_ablation.py` | Runs extraction with and without `_verify()` on saved counts |
+
+---
+
+# Original README
+
+*The following is GiancarloLelli's original documentation, unmodified.*
+
+---
+
 # Shor's Algorithm for ECDLP — Q-Day Prize Submission
 
 Quantum solver for the Elliptic Curve Discrete Logarithm Problem (ECDLP), built for the [Q-Day Prize Challenge](https://www.qdayprize.org/) by [Project Eleven](https://www.projecteleven.com/). The goal: recover ECC private keys on real quantum hardware using Shor's algorithm.
