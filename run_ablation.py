@@ -29,16 +29,52 @@ from typing import Dict, Optional, Tuple, List
 from projecteleven import CurveParams, EllipticCurve, ShorECDLP
 
 
+def parse_bitstrings(solver, counts: Dict[str, int]) -> List[Tuple[Tuple[int, int, int], int]]:
+    """Parse measurement bitstrings into (j, k, r) tuples.
+
+    Handles both ShorECDLP (point register = n_bits) and
+    RippleCarryShorECDLP (accumulator = m+1 bits) register layouts.
+    Both use Qiskit MSB-left: k_bits | j_bits | point/acc_bits.
+    """
+    n = solver.n
+    parsed = []
+
+    # Determine point/accumulator register width
+    if hasattr(solver, 'm'):
+        # RippleCarryShorECDLP: accumulator is m+1 bits
+        pt_width = solver.m + 1
+    elif hasattr(solver, 'encoder'):
+        pt_width = solver.encoder.n_bits
+    else:
+        pt_width = max(1, (n - 1).bit_length())
+
+    for bitstring, count in counts.items():
+        num_counting = (len(bitstring) - pt_width) // 2
+        if len(bitstring) != 2 * num_counting + pt_width:
+            continue
+
+        k_bits = bitstring[:num_counting]
+        j_bits = bitstring[num_counting:2 * num_counting]
+        pt_bits = bitstring[2 * num_counting:]
+
+        j = int(j_bits, 2) % n
+        k = int(k_bits, 2) % n
+        r = int(pt_bits, 2) % n
+
+        parsed.append(((j, k, r), count))
+
+    return parsed
+
+
 def extract_with_verify(solver, counts: Dict[str, int]) -> Tuple[Optional[int], Dict[int, int]]:
-    """GiancarloLelli's exact extraction — _verify() on every candidate."""
+    """GiancarloLelli's exact extraction — _verify() on every candidate.
+
+    Uses only the direct path for RippleCarryShorECDLP (matching his code),
+    and both direct + pair paths for ShorECDLP.
+    """
     n = solver.n
     candidates: Dict[int, int] = {}
-
-    parsed = []
-    for bitstring, count in counts.items():
-        result = solver._parse_bitstring(bitstring)
-        if result:
-            parsed.append((result, count))
+    parsed = parse_bitstrings(solver, counts)
 
     # Direct extraction
     for (j, k, r), count in parsed:
@@ -52,24 +88,25 @@ def extract_with_verify(solver, counts: Dict[str, int]) -> Tuple[Optional[int], 
         except (ValueError, ZeroDivisionError):
             pass
 
-    # Pair-based extraction
-    by_r: Dict[int, List] = {}
-    for (j, k, r), count in parsed:
-        by_r.setdefault(r, []).append((j, k, count))
+    # Pair-based extraction (ShorECDLP only — RippleCarry doesn't use it)
+    if not hasattr(solver, 'm'):
+        by_r: Dict[int, List] = {}
+        for (j, k, r), count in parsed:
+            by_r.setdefault(r, []).append((j, k, count))
 
-    for r, meas in by_r.items():
-        for i, (j1, k1, c1) in enumerate(meas):
-            for j2, k2, c2 in meas[i+1:]:
-                dk = (k1 - k2) % n
-                dj = (j2 - j1) % n
-                if dk == 0 or math.gcd(dk, n) != 1:
-                    continue
-                try:
-                    d_cand = (dj * pow(dk, -1, n)) % n
-                    if solver._verify(d_cand):
-                        candidates[d_cand] = candidates.get(d_cand, 0) + c1 + c2
-                except (ValueError, ZeroDivisionError):
-                    pass
+        for r, meas in by_r.items():
+            for i, (j1, k1, c1) in enumerate(meas):
+                for j2, k2, c2 in meas[i+1:]:
+                    dk = (k1 - k2) % n
+                    dj = (j2 - j1) % n
+                    if dk == 0 or math.gcd(dk, n) != 1:
+                        continue
+                    try:
+                        d_cand = (dj * pow(dk, -1, n)) % n
+                        if solver._verify(d_cand):
+                            candidates[d_cand] = candidates.get(d_cand, 0) + c1 + c2
+                    except (ValueError, ZeroDivisionError):
+                        pass
 
     if candidates:
         return max(candidates, key=candidates.get), candidates
@@ -80,12 +117,7 @@ def extract_without_verify(solver, counts: Dict[str, int]) -> Tuple[Optional[int
     """Same extraction logic, NO _verify(). All candidates ranked by raw votes."""
     n = solver.n
     candidates: Dict[int, int] = {}
-
-    parsed = []
-    for bitstring, count in counts.items():
-        result = solver._parse_bitstring(bitstring)
-        if result:
-            parsed.append((result, count))
+    parsed = parse_bitstrings(solver, counts)
 
     # Direct extraction
     for (j, k, r), count in parsed:
@@ -99,24 +131,25 @@ def extract_without_verify(solver, counts: Dict[str, int]) -> Tuple[Optional[int
         except (ValueError, ZeroDivisionError):
             pass
 
-    # Pair-based extraction
-    by_r: Dict[int, List] = {}
-    for (j, k, r), count in parsed:
-        by_r.setdefault(r, []).append((j, k, count))
+    # Pair-based extraction (ShorECDLP only)
+    if not hasattr(solver, 'm'):
+        by_r: Dict[int, List] = {}
+        for (j, k, r), count in parsed:
+            by_r.setdefault(r, []).append((j, k, count))
 
-    for r, meas in by_r.items():
-        for i, (j1, k1, c1) in enumerate(meas):
-            for j2, k2, c2 in meas[i+1:]:
-                dk = (k1 - k2) % n
-                dj = (j2 - j1) % n
-                if dk == 0 or math.gcd(dk, n) != 1:
-                    continue
-                try:
-                    d_cand = (dj * pow(dk, -1, n)) % n
-                    if d_cand > 0:
-                        candidates[d_cand] = candidates.get(d_cand, 0) + c1 + c2
-                except (ValueError, ZeroDivisionError):
-                    pass
+        for r, meas in by_r.items():
+            for i, (j1, k1, c1) in enumerate(meas):
+                for j2, k2, c2 in meas[i+1:]:
+                    dk = (k1 - k2) % n
+                    dj = (j2 - j1) % n
+                    if dk == 0 or math.gcd(dk, n) != 1:
+                        continue
+                    try:
+                        d_cand = (dj * pow(dk, -1, n)) % n
+                        if d_cand > 0:
+                            candidates[d_cand] = candidates.get(d_cand, 0) + c1 + c2
+                    except (ValueError, ZeroDivisionError):
+                        pass
 
     if candidates:
         return max(candidates, key=candidates.get), candidates
