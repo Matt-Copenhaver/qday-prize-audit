@@ -154,8 +154,7 @@ def main():
 
         print(f"\nBackend: {backend_name}")
 
-        qc_t = transpile(qc, backend, optimization_level=args.optimization_level,
-                          seed_transpiler=42)
+        qc_t = transpile(qc, backend, optimization_level=args.optimization_level)
         transpiled_depth = qc_t.depth()
         total_qubits_transpiled = qc_t.num_qubits
         circuit_ops = dict(qc_t.count_ops())
