@@ -1,0 +1,107 @@
+{
+  "run_id": "ablation_15bit_20260424_194607",
+  "timestamp_utc": "2026-04-24T19:46:07.725825+00:00",
+  "source_counts": "results/audit_15bit_20260424_193806/raw_counts.json",
+  "challenge": {
+    "bit_length": 15,
+    "n": 16693,
+    "true_d": 14794
+  },
+  "with_verify": {
+    "result_d": 14794,
+    "correct": true,
+    "num_candidates": 1
+  },
+  "without_verify": {
+    "top1_d": 2857,
+    "top1_votes": 9,
+    "top1_correct": false,
+    "true_d_rank": 3955,
+    "true_d_votes": 3,
+    "num_candidates": 14340,
+    "expected_votes_noise": 1.9626190618822261,
+    "z_score": 0.7404918062028661,
+    "top_20": [
+      {
+        "d": 2857,
+        "votes": 9
+      },
+      {
+        "d": 1605,
+        "votes": 9
+      },
+      {
+        "d": 5154,
+        "votes": 9
+      },
+      {
+        "d": 412,
+        "votes": 8
+      },
+      {
+        "d": 7151,
+        "votes": 8
+      },
+      {
+        "d": 15167,
+        "votes": 8
+      },
+      {
+        "d": 15277,
+        "votes": 8
+      },
+      {
+        "d": 11405,
+        "votes": 8
+      },
+      {
+        "d": 13611,
+        "votes": 8
+      },
+      {
+        "d": 12662,
+        "votes": 8
+      },
+      {
+        "d": 6812,
+        "votes": 8
+      },
+      {
+        "d": 6296,
+        "votes": 8
+      },
+      {
+        "d": 13117,
+        "votes": 8
+      },
+      {
+        "d": 13935,
+        "votes": 8
+      },
+      {
+        "d": 15988,
+        "votes": 8
+      },
+      {
+        "d": 7347,
+        "votes": 8
+      },
+      {
+        "d": 4565,
+        "votes": 8
+      },
+      {
+        "d": 505,
+        "votes": 8
+      },
+      {
+        "d": 6516,
+        "votes": 8
+      },
+      {
+        "d": 7837,
+        "votes": 7
+      }
+    ]
+  }
+}

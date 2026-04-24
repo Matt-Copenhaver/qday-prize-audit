@@ -1,0 +1,55 @@
+{
+  "run_id": "audit_15bit_20260424_193806",
+  "timestamp_utc": "2026-04-24T19:45:12.130909+00:00",
+  "challenge": {
+    "bit_length": 15,
+    "p": 16477,
+    "a": 0,
+    "b": 7,
+    "n": 16693,
+    "G": [
+      15429,
+      10667
+    ],
+    "Q": [
+      6884,
+      12671
+    ],
+    "true_d": 14794
+  },
+  "hardware": {
+    "backend": "ibm_fez",
+    "job_id": "d7lsddc3g2mc7391ogh0",
+    "shots": 32768,
+    "optimization_level": 3
+  },
+  "circuit": {
+    "oracle_strategy": "ripple-carry modular addition (CDKM)",
+    "logical_qubits": 65,
+    "transpiled_depth": 235233,
+    "two_qubit_gates": 101042,
+    "transpiled_qubits": 156,
+    "gate_ops": {
+      "sx": 196597,
+      "rz": 134821,
+      "cz": 101042,
+      "x": 2992,
+      "measure": 46
+    },
+    "estimated_fidelity": 1.14553530824207e-22
+  },
+  "measurement": {
+    "unique_outcomes": 32768,
+    "total_shots": 32768,
+    "counts_file": "raw_counts.json"
+  },
+  "extraction": {
+    "method": "extract_discrete_log (original, with _verify)",
+    "result_d": 14794,
+    "correct": true
+  },
+  "provenance": {
+    "source_code_hash_sha256": "82a872759588833109b6318d1257cfbbd1e4f5955cd6975510de1e4dd77789c0",
+    "audit_script": "run_audited.py"
+  }
+}
